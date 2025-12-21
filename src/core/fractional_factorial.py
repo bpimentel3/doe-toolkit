@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 
 from src.core.factors import Factor, FactorType
+<<<<<<< HEAD
 from src.core.design_generation import full_factorial
 from src.core.aliasing import (
     FactorMapper,
@@ -20,6 +21,9 @@ from src.core.aliasing import (
     format_alias_table,
     validate_resolution_achievable
 )
+=======
+from src.core.full_factorial import full_factorial
+>>>>>>> c3bd252e6878bc178fe932d7d3459aae7ca2f528
 
 
 class FractionalFactorial:
