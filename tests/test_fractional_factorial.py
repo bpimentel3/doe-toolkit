@@ -86,8 +86,12 @@ class TestFractionalFactorialCreation:
             generators=["E=ABCD"]
         )
         
-        # Check generator was parsed correctly
-        assert ff.generators == [("E", "ABCD")]
+        # Check generator was parsed correctly (now stored in algebraic form)
+        assert ff.generators_algebraic == [("E", "ABCD")]
+        
+        # Check defining relation exists
+        assert hasattr(ff, 'defining_relation')
+        assert "ABCDE" in ff.defining_relation
     
     def test_with_blocking(self):
         """Test fractional factorial with blocking."""
@@ -139,7 +143,7 @@ class TestDefiningRelation:
         
         ff = FractionalFactorial(factors, fraction="1/2", resolution=5)
         
-        # For E=ABCD, defining relation should be I=ABCDE
+        # For E=ABCD, defining relation should be I, ABCDE (sorted alphabetically)
         assert "I" in ff.defining_relation
         assert "ABCDE" in ff.defining_relation
     
@@ -153,7 +157,7 @@ class TestDefiningRelation:
         
         ff = FractionalFactorial(factors, fraction="1/2", resolution=4)
         
-        # For D=ABC, defining relation should be I=ABCD
+        # For D=ABC, defining relation should be I, ABCD (sorted alphabetically)
         assert "I" in ff.defining_relation
         assert "ABCD" in ff.defining_relation
 
@@ -262,7 +266,7 @@ class TestValidation:
             for i in range(4)
         ]
         
-        with pytest.raises(ValueError, match="must be in format"):
+        with pytest.raises(ValueError, match="must be power of 2"):
             FractionalFactorial(factors, fraction="1/3")
     
     def test_too_large_fraction(self):
@@ -273,7 +277,7 @@ class TestValidation:
             for i in range(4)
         ]
         
-        with pytest.raises(ValueError, match="must be less than number of factors"):
+        with pytest.raises(ValueError, match="Cannot create"):
             FractionalFactorial(factors, fraction="1/16")
 
 
