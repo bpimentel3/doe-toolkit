@@ -1,12 +1,12 @@
 """
-Unit tests for design generation module.
+Unit tests for full factorial design generation.
 """
 
 import pytest
 import pandas as pd
 import numpy as np
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
-from src.core.design_generation import (
+from src.core.full_factorial import (
     full_factorial,
     decode_design,
     get_design_summary

@@ -1,8 +1,8 @@
 """
-Design generation algorithms for DOE-Toolkit.
+Full factorial design generation for DOE-Toolkit.
 
-This module contains functions to generate various experimental designs including
-full factorial, fractional factorial, and response surface designs.
+This module generates full factorial experimental designs with support for
+center points, blocking, and randomization.
 """
 
 import itertools
