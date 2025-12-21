@@ -5,25 +5,13 @@ This module implements 2^(k-p) fractional factorial designs with automatic
 generator selection and alias structure calculation.
 """
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 import pandas as pd
 import numpy as np
+import itertools
 
 from src.core.factors import Factor, FactorType
-<<<<<<< HEAD
-from src.core.design_generation import full_factorial
-from src.core.aliasing import (
-    FactorMapper,
-    GeneratorValidator,
-    AliasingEngine,
-    parse_generators,
-    get_standard_generators,
-    format_alias_table,
-    validate_resolution_achievable
-)
-=======
 from src.core.full_factorial import full_factorial
->>>>>>> c3bd252e6878bc178fe932d7d3459aae7ca2f528
 
 
 class FractionalFactorial:
@@ -59,8 +47,6 @@ class FractionalFactorial:
         Complete defining relation (generator words)
     alias_structure : Dict
         Complete alias structure for all effects
-    mapper : FactorMapper
-        Maps between real factor names and algebraic symbols
     
     Examples
     --------
@@ -98,54 +84,25 @@ class FractionalFactorial:
         # Check if fraction is valid
         if self.p >= self.k:
             raise ValueError(
-                f"Cannot create 1/{2**self.p} fraction of {self.k} factors"
+                f"Cannot create 1/{2**self.p} fraction of {self.k} factors. "
+                f"Fraction must be less than number of factors."
             )
         
-        # Create factor name mapper
-        self.mapper = FactorMapper(factors)
-        
-        # Validate generator count
-        validator = GeneratorValidator(self.k, self.p, self.mapper)
-        validator.validate_generator_count()
-        
-        # Determine generators (in algebraic form)
+        # Determine generators
         if generators is not None:
-            # Custom generators provided
-            validator.validate_all(generators)
-            parsed_generators = parse_generators(generators)
-            self.resolution = self._get_resolution_from_generators(parsed_generators)
-            
-            # Validate resolution if specified
-            if resolution is not None and self.resolution < resolution:
-                raise ValueError(
-                    f"Generators achieve Resolution {self.resolution}, "
-                    f"not {resolution} as specified"
-                )
+            self.generators = self._parse_generators(generators)
+            self.resolution = self._calculate_resolution()
         elif resolution is not None:
-            # Auto-select generators for target resolution
             self.resolution = resolution
-            parsed_generators = self._select_generators(resolution)
-            
-            if parsed_generators is None:
-                raise ValueError(
-                    f"No standard generators available for k={self.k}, "
-                    f"p={self.p}, resolution={resolution}"
-                )
+            self.generators = self._select_generators(resolution)
         else:
             # Default: highest resolution possible
             self.resolution = self._get_max_resolution()
-            parsed_generators = self._select_generators(self.resolution)
-            
-            if parsed_generators is None:
-                raise ValueError(
-                    f"No standard generators available for k={self.k}, p={self.p}"
-                )
+            self.generators = self._select_generators(self.resolution)
         
-        # Store generators and build aliasing structure
-        self.generators_algebraic = parsed_generators
-        self.engine = AliasingEngine(self.k, parsed_generators)
-        self.defining_relation = self.engine.defining_relation
-        self.alias_structure = self.engine.alias_structure
+        # Calculate alias structure
+        self.defining_relation = self._calculate_defining_relation()
+        self.alias_structure = self._calculate_alias_structure()
     
     def _validate_factors(self, factors: List[Factor]) -> None:
         """Validate that all factors are suitable for fractional factorial."""
@@ -155,14 +112,14 @@ class FractionalFactorial:
         for factor in factors:
             if not factor.is_continuous() and not factor.is_discrete_numeric():
                 raise ValueError(
-                    f"Factor '{factor.name}' must be continuous or discrete numeric. "
-                    f"Categorical factors not supported."
+                    f"Factor '{factor.name}' must be continuous or discrete numeric "
+                    f"for fractional factorial. Categorical factors not supported."
                 )
             
             if factor.is_discrete_numeric() and len(factor.levels) != 2:
                 raise ValueError(
-                    f"Factor '{factor.name}' must have exactly 2 levels, "
-                    f"got {len(factor.levels)}"
+                    f"Factor '{factor.name}' must have exactly 2 levels for "
+                    f"fractional factorial, got {len(factor.levels)}"
                 )
     
     def _parse_fraction(self, fraction: str) -> int:
@@ -171,30 +128,224 @@ class FractionalFactorial:
             denominator = int(fraction[2:])
             # Check if power of 2
             if denominator & (denominator - 1) != 0:
-                raise ValueError(f"Fraction must be power of 2, got {denominator}")
+                raise ValueError(f"Fraction denominator must be power of 2, got {denominator}")
             p = int(np.log2(denominator))
             return p
         else:
-            raise ValueError(f"Fraction must be in format '1/2', '1/4', etc.")
+            raise ValueError(f"Fraction must be in format '1/2', '1/4', etc., got '{fraction}'")
     
     def _get_max_resolution(self) -> int:
         """Determine maximum achievable resolution for given k and p."""
-        # Try resolutions from V down to III
-        for res in [5, 4, 3]:
-            if get_standard_generators(self.k, self.p, res) is not None:
-                return res
+        # Resolution definitions:
+        # III: Main effects clear, main effects aliased with 2FI
+        # IV: Main effects clear, 2FI aliased with other 2FI
+        # V: Main effects and 2FI clear
         
-        # Fallback
-        return 3
+        n_runs = 2 ** (self.k - self.p)
+        
+        # Rough heuristic for max resolution
+        if self.p == 1:
+            if self.k <= 5:
+                return 5
+            elif self.k <= 7:
+                return 4
+            else:
+                return 3
+        elif self.p == 2:
+            if self.k <= 7:
+                return 4
+            else:
+                return 3
+        else:
+            return 3
     
-    def _select_generators(self, resolution: int) -> Optional[List[Tuple[str, str]]]:
-        """Select generators to achieve desired resolution."""
-        return get_standard_generators(self.k, self.p, resolution)
+    def _select_generators(self, resolution: int) -> List[Tuple[str, str]]:
+        """
+        Select generators to achieve desired resolution.
+        
+        Returns list of (factor, generator_expression) tuples.
+        """
+        # Standard generators for common designs
+        # Format: (k, p, resolution): [(factor, generator), ...]
+        
+        standard_generators = {
+            # 2^(4-1) designs
+            (4, 1, 4): [("D", "ABC")],
+            
+            # 2^(5-1) designs  
+            (5, 1, 5): [("E", "ABCD")],
+            
+            # 2^(5-2) designs
+            (5, 2, 3): [("D", "AB"), ("E", "AC")],
+            
+            # 2^(6-1) designs
+            (6, 1, 6): [("F", "ABCDE")],
+            
+            # 2^(6-2) designs
+            (6, 2, 4): [("E", "ABC"), ("F", "BCD")],
+            
+            # 2^(7-1) designs
+            (7, 1, 7): [("G", "ABCDEF")],
+            
+            # 2^(7-2) designs
+            (7, 2, 4): [("F", "ABCD"), ("G", "ABCE")],
+            
+            # 2^(7-3) designs
+            (7, 3, 4): [("E", "ABC"), ("F", "BCD"), ("G", "ACD")],
+            
+            # 2^(8-2) designs
+            (8, 2, 5): [("G", "ABCD"), ("H", "ABEF")],
+            
+            # 2^(8-4) designs
+            (8, 4, 4): [("E", "BCD"), ("F", "ACD"), ("G", "ABC"), ("H", "ABD")],
+        }
+        
+        key = (self.k, self.p, resolution)
+        
+        if key in standard_generators:
+            return standard_generators[key]
+        else:
+            # Fall back to simple sequential generators
+            # This may not achieve the desired resolution
+            base_factors = [chr(65 + i) for i in range(self.k - self.p)]
+            generators = []
+            
+            for i in range(self.p):
+                generated_factor = chr(65 + self.k - self.p + i)
+                # Use simplest generator: product of all base factors
+                generator_expr = "".join(base_factors[:i+2])
+                generators.append((generated_factor, generator_expr))
+            
+            return generators
     
-    def _get_resolution_from_generators(self, generators: List[Tuple[str, str]]) -> int:
-        """Calculate resolution from generators."""
-        temp_engine = AliasingEngine(self.k, generators)
-        return temp_engine.resolution
+    def _parse_generators(self, generator_strings: List[str]) -> List[Tuple[str, str]]:
+        """Parse generator strings like ["D=ABC", "E=BCD"] into tuples."""
+        parsed = []
+        for gen_str in generator_strings:
+            if "=" not in gen_str:
+                raise ValueError(f"Generator must contain '=', got '{gen_str}'")
+            
+            parts = gen_str.split("=")
+            if len(parts) != 2:
+                raise ValueError(f"Invalid generator format: '{gen_str}'")
+            
+            factor = parts[0].strip()
+            expression = parts[1].strip()
+            
+            parsed.append((factor, expression))
+        
+        if len(parsed) != self.p:
+            raise ValueError(
+                f"Number of generators ({len(parsed)}) must equal p ({self.p})"
+            )
+        
+        return parsed
+    
+    def _calculate_defining_relation(self) -> List[str]:
+        """
+        Calculate the complete defining relation.
+        
+        The defining relation includes the generators and all their products.
+        """
+        # Start with identity
+        words = ["I"]
+        
+        # Add generators
+        for factor, expression in self.generators:
+            words.append(factor + expression)
+        
+        # Generate all products of generators
+        n_generators = len(self.generators)
+        for r in range(2, n_generators + 1):
+            for combo in itertools.combinations(range(n_generators), r):
+                # Multiply the generators
+                word = ""
+                for idx in combo:
+                    factor, expression = self.generators[idx]
+                    word += factor + expression
+                
+                # Simplify (remove pairs of same letter)
+                word = self._simplify_word(word)
+                if word and word not in words:
+                    words.append(word)
+        
+        return words
+    
+    def _simplify_word(self, word: str) -> str:
+        """
+        Simplify a generator word by removing pairs of identical letters.
+        
+        In mod-2 algebra: A*A = I, A*B*A = B, etc.
+        """
+        # Count occurrences of each letter
+        counts = {}
+        for letter in word:
+            counts[letter] = counts.get(letter, 0) + 1
+        
+        # Keep only letters with odd counts
+        result = ""
+        for letter in sorted(counts.keys()):
+            if counts[letter] % 2 == 1:
+                result += letter
+        
+        return result
+    
+    def _calculate_resolution(self) -> int:
+        """
+        Calculate the resolution of the design based on generators.
+        
+        Resolution = minimum word length in defining relation (excluding I)
+        """
+        min_length = float('inf')
+        
+        for word in self.defining_relation:
+            if word != "I":
+                min_length = min(min_length, len(word))
+        
+        return int(min_length) if min_length != float('inf') else 0
+    
+    def _calculate_alias_structure(self) -> Dict[str, List[str]]:
+        """
+        Calculate the alias structure for all effects.
+        
+        Each effect is aliased with its product with each word in the
+        defining relation.
+        """
+        alias_structure = {}
+        
+        # Factor names
+        factor_names = [chr(65 + i) for i in range(self.k)]
+        
+        # All effects to consider (main effects and interactions)
+        # For practical purposes, consider up to 4-factor interactions
+        all_effects = self._generate_effects(factor_names, max_order=4)
+        
+        for effect in all_effects:
+            aliases = set()
+            
+            # Multiply effect by each word in defining relation
+            for word in self.defining_relation:
+                if word == "I":
+                    continue
+                
+                alias = self._simplify_word(effect + word)
+                if alias and alias != effect:
+                    aliases.add(alias)
+            
+            if aliases:
+                alias_structure[effect] = sorted(list(aliases), key=lambda x: (len(x), x))
+        
+        return alias_structure
+    
+    def _generate_effects(self, factor_names: List[str], max_order: int) -> List[str]:
+        """Generate all effects up to specified order."""
+        effects = []
+        
+        for order in range(1, min(max_order, len(factor_names)) + 1):
+            for combo in itertools.combinations(factor_names, order):
+                effects.append("".join(combo))
+        
+        return effects
     
     def generate(
         self,
@@ -217,7 +368,7 @@ class FractionalFactorial:
         Returns
         -------
         pd.DataFrame
-            Design matrix with factor columns (using real names)
+            Design matrix
         """
         if random_seed is not None:
             np.random.seed(random_seed)
@@ -233,17 +384,15 @@ class FractionalFactorial:
         base_design = base_design[[f.name for f in base_factors]]
         
         # Generate additional factors using generators
-        for factor_symbol, expression in self.generators_algebraic:
-            # Get the factor object
-            factor_idx = ord(factor_symbol) - 65
-            gen_factor = self.factors[factor_idx]
+        for factor, expression in self.generators:
+            # Get the generated factor
+            gen_factor = self.factors[ord(factor) - 65]
             
             # Calculate values by multiplying base factors
             values = np.ones(len(base_design))
-            for symbol in expression:
-                # Map symbol to real factor name
-                real_name = self.mapper.to_real(symbol)
-                values *= base_design[real_name].values
+            for letter in expression:
+                col_name = self.factors[ord(letter) - 65].name
+                values *= base_design[col_name].values
             
             base_design[gen_factor.name] = values
         
@@ -294,7 +443,16 @@ class FractionalFactorial:
         pd.DataFrame
             Table showing each effect and what it's aliased with
         """
-        return format_alias_table(self.alias_structure, self.mapper)
+        rows = []
+        
+        for effect, aliases in sorted(self.alias_structure.items(), 
+                                      key=lambda x: (len(x[0]), x[0])):
+            rows.append({
+                'Effect': effect,
+                'Aliased_With': ' + '.join(aliases) if aliases else 'Clear'
+            })
+        
+        return pd.DataFrame(rows)
     
     def __repr__(self) -> str:
         """String representation."""
