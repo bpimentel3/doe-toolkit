@@ -11,7 +11,7 @@ import numpy as np
 import itertools
 
 from src.core.factors import Factor, FactorType
-from src.core.design_generation import full_factorial
+from src.core.full_factorial import full_factorial
 
 
 class FractionalFactorial:
