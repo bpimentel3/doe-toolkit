@@ -7,15 +7,12 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr
 
-import sys
-sys.path.insert(0, 'src/core')
-
-from latin_hypercube import (
+from src.core.latin_hypercube import (
     generate_latin_hypercube,
     augment_latin_hypercube,
     LHSDesign
 )
-from factors import Factor, FactorType
+from src.core.factors import Factor, FactorType, ChangeabilityLevel
 
 
 class TestGenerateLatinHypercube:
@@ -24,8 +21,8 @@ class TestGenerateLatinHypercube:
     def test_basic_continuous_factors(self):
         """Test LHS generation with continuous factors."""
         factors = [
-            Factor(name='Temperature', type=FactorType.CONTINUOUS, min=100, max=200),
-            Factor(name='Pressure', type=FactorType.CONTINUOUS, min=1, max=5)
+            Factor(name='Temperature', factor_type=FactorType.CONTINUOUS, levels=[100, 200]),
+            Factor(name='Pressure', factor_type=FactorType.CONTINUOUS, levels=[1, 5])
         ]
         
         design = generate_latin_hypercube(factors, n_runs=20, seed=42)
@@ -44,7 +41,7 @@ class TestGenerateLatinHypercube:
     def test_discrete_numeric_factors(self):
         """Test LHS with discrete numeric factors (should round to allowed levels)."""
         factors = [
-            Factor(name='RPM', type=FactorType.DISCRETE, 
+            Factor(name='RPM', factor_type=FactorType.DISCRETE_NUMERIC, 
                    levels=[100, 150, 200, 250, 300])
         ]
         
@@ -57,7 +54,7 @@ class TestGenerateLatinHypercube:
     def test_categorical_factors(self):
         """Test LHS with categorical factors (stratified sampling)."""
         factors = [
-            Factor(name='Material', type=FactorType.CATEGORICAL,
+            Factor(name='Material', factor_type=FactorType.CATEGORICAL,
                    levels=['A', 'B', 'C'])
         ]
         
@@ -70,7 +67,7 @@ class TestGenerateLatinHypercube:
     def test_categorical_uneven_distribution(self):
         """Test categorical with runs not evenly divisible by levels."""
         factors = [
-            Factor(name='Supplier', type=FactorType.CATEGORICAL,
+            Factor(name='Supplier', factor_type=FactorType.CATEGORICAL,
                    levels=['X', 'Y', 'Z'])
         ]
         
@@ -86,9 +83,9 @@ class TestGenerateLatinHypercube:
     def test_mixed_factor_types(self):
         """Test LHS with continuous, discrete, and categorical factors."""
         factors = [
-            Factor(name='Temp', type=FactorType.CONTINUOUS, min=100, max=200),
-            Factor(name='Speed', type=FactorType.DISCRETE, levels=[10, 20, 30]),
-            Factor(name='Tool', type=FactorType.CATEGORICAL, levels=['A', 'B'])
+            Factor(name='Temp', factor_type=FactorType.CONTINUOUS, levels=[100, 200]),
+            Factor(name='Speed', factor_type=FactorType.DISCRETE_NUMERIC, levels=[10, 20, 30]),
+            Factor(name='Tool', factor_type=FactorType.CATEGORICAL, levels=['A', 'B'])
         ]
         
         design = generate_latin_hypercube(factors, n_runs=20, seed=42)
@@ -112,8 +109,8 @@ class TestGenerateLatinHypercube:
     def test_coded_levels(self):
         """Test that coded levels are in [-1, 1] range."""
         factors = [
-            Factor(name='X1', type=FactorType.CONTINUOUS, min=0, max=100),
-            Factor(name='X2', type=FactorType.CONTINUOUS, min=50, max=150)
+            Factor(name='X1', factor_type=FactorType.CONTINUOUS, levels=[0, 100]),
+            Factor(name='X2', factor_type=FactorType.CONTINUOUS, levels=[50, 150])
         ]
         
         design = generate_latin_hypercube(factors, n_runs=15, seed=42)
@@ -134,8 +131,8 @@ class TestGenerateLatinHypercube:
     def test_maximin_criterion(self):
         """Test that maximin criterion selects design with good space-filling."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1),
-            Factor(name='Y', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1]),
+            Factor(name='Y', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         design = generate_latin_hypercube(
@@ -148,8 +145,8 @@ class TestGenerateLatinHypercube:
     def test_correlation_criterion(self):
         """Test correlation criterion for factor independence."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1),
-            Factor(name='Y', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1]),
+            Factor(name='Y', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         design = generate_latin_hypercube(
@@ -167,7 +164,7 @@ class TestGenerateLatinHypercube:
     def test_single_continuous_factor(self):
         """Test with single continuous factor (edge case for correlation)."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         # Should work for both criteria
@@ -184,8 +181,8 @@ class TestGenerateLatinHypercube:
     def test_only_categorical_factors(self):
         """Test with only categorical factors (no numeric scoring)."""
         factors = [
-            Factor(name='Material', type=FactorType.CATEGORICAL, levels=['A', 'B', 'C']),
-            Factor(name='Process', type=FactorType.CATEGORICAL, levels=['P1', 'P2'])
+            Factor(name='Material', factor_type=FactorType.CATEGORICAL, levels=['A', 'B', 'C']),
+            Factor(name='Process', factor_type=FactorType.CATEGORICAL, levels=['P1', 'P2'])
         ]
         
         design = generate_latin_hypercube(factors, n_runs=18, seed=42)
@@ -198,7 +195,7 @@ class TestGenerateLatinHypercube:
     def test_latin_property(self):
         """Test that design has Latin property (one sample per interval)."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         n_runs = 10
@@ -215,8 +212,8 @@ class TestGenerateLatinHypercube:
     def test_reproducibility_with_seed(self):
         """Test that same seed produces same design."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1),
-            Factor(name='Y', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1]),
+            Factor(name='Y', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         design1 = generate_latin_hypercube(factors, n_runs=10, seed=42)
@@ -227,8 +224,8 @@ class TestGenerateLatinHypercube:
     def test_different_seeds_produce_different_designs(self):
         """Test that different seeds produce different designs."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1),
-            Factor(name='Y', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1]),
+            Factor(name='Y', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         design1 = generate_latin_hypercube(factors, n_runs=10, seed=42)
@@ -244,7 +241,7 @@ class TestLHSValidation:
     def test_n_runs_too_small(self):
         """Test that n_runs < 2 raises error."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         with pytest.raises(ValueError, match="n_runs must be at least 2"):
@@ -253,7 +250,7 @@ class TestLHSValidation:
     def test_n_candidates_too_small(self):
         """Test that n_candidates < 1 raises error."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         with pytest.raises(ValueError, match="n_candidates must be at least 1"):
@@ -267,7 +264,7 @@ class TestLHSValidation:
     def test_invalid_criterion(self):
         """Test that invalid criterion raises error."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         with pytest.raises(ValueError, match="Unknown criterion"):
@@ -280,8 +277,8 @@ class TestAugmentLatinHypercube:
     def test_basic_augmentation(self):
         """Test adding runs to existing design."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1),
-            Factor(name='Y', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1]),
+            Factor(name='Y', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         # Generate initial design
@@ -307,7 +304,7 @@ class TestAugmentLatinHypercube:
     def test_augmentation_maintains_bounds(self):
         """Test that augmented runs respect factor bounds."""
         factors = [
-            Factor(name='Temp', type=FactorType.CONTINUOUS, min=100, max=200)
+            Factor(name='Temp', factor_type=FactorType.CONTINUOUS, levels=[100, 200])
         ]
         
         initial = generate_latin_hypercube(factors, n_runs=10, seed=42)
@@ -326,8 +323,8 @@ class TestAugmentLatinHypercube:
     def test_augmentation_with_categorical(self):
         """Test augmentation with mixed factor types."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1),
-            Factor(name='Cat', type=FactorType.CATEGORICAL, levels=['A', 'B', 'C'])
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1]),
+            Factor(name='Cat', factor_type=FactorType.CATEGORICAL, levels=['A', 'B', 'C'])
         ]
         
         initial = generate_latin_hypercube(factors, n_runs=9, seed=42)
@@ -348,7 +345,7 @@ class TestAugmentLatinHypercube:
     def test_augmentation_invalid_runs(self):
         """Test that n_additional_runs < 1 raises error."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         initial = generate_latin_hypercube(factors, n_runs=10, seed=42)
@@ -364,10 +361,10 @@ class TestAugmentLatinHypercube:
     def test_augmentation_mismatched_factors(self):
         """Test that mismatched factors raise error."""
         factors1 = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         factors2 = [
-            Factor(name='Y', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='Y', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         initial = generate_latin_hypercube(factors1, n_runs=10, seed=42)
@@ -383,8 +380,8 @@ class TestAugmentLatinHypercube:
     def test_augmentation_improves_space_filling(self):
         """Test that augmentation maintains good space-filling properties."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1),
-            Factor(name='Y', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1]),
+            Factor(name='Y', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         # Start with small design
@@ -411,7 +408,7 @@ class TestLHSDesignObject:
     def test_design_object_attributes(self):
         """Test that LHSDesign has all required attributes."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         design = generate_latin_hypercube(factors, n_runs=10, seed=42)
@@ -435,8 +432,8 @@ class TestSpaceFillingQuality:
     def test_better_than_random(self):
         """Test that LHS has better space coverage than random sampling."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1),
-            Factor(name='Y', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1]),
+            Factor(name='Y', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         # Generate LHS
@@ -460,7 +457,7 @@ class TestSpaceFillingQuality:
     def test_coverage_across_space(self):
         """Test that LHS covers the design space well."""
         factors = [
-            Factor(name='X', type=FactorType.CONTINUOUS, min=0, max=1)
+            Factor(name='X', factor_type=FactorType.CONTINUOUS, levels=[0, 1])
         ]
         
         n_runs = 20

@@ -12,7 +12,7 @@ from scipy.spatial.distance import pdist
 from typing import List, Literal
 from dataclasses import dataclass
 
-from factors import Factor, FactorType
+from src.core.factors import Factor, FactorType
 
 
 @dataclass
@@ -94,12 +94,12 @@ def generate_latin_hypercube(
     
     Examples
     --------
-    >>> from factors import Factor, FactorType
+    >>> from src.core.factors import Factor, FactorType
     >>> factors = [
-    ...     Factor(name='Temperature', type=FactorType.CONTINUOUS, 
-    ...            min=100, max=200, units='°C'),
-    ...     Factor(name='Pressure', type=FactorType.CONTINUOUS,
-    ...            min=1, max=5, units='bar')
+    ...     Factor(name='Temperature', factor_type=FactorType.CONTINUOUS, 
+    ...            levels=[100, 200], units='°C'),
+    ...     Factor(name='Pressure', factor_type=FactorType.CONTINUOUS,
+    ...            levels=[1, 5], units='bar')
     ... ]
     >>> design = generate_latin_hypercube(factors, n_runs=20, criterion='maximin')
     >>> print(design.design.head())
@@ -120,8 +120,9 @@ def generate_latin_hypercube(
         raise ValueError("At least one factor must be provided")
     
     # Separate factors by type
-    continuous_factors = [f for f in factors if f.type in (FactorType.CONTINUOUS, FactorType.DISCRETE)]
-    categorical_factors = [f for f in factors if f.type == FactorType.CATEGORICAL]
+    continuous_factors = [f for f in factors 
+                         if f.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC)]
+    categorical_factors = [f for f in factors if f.factor_type == FactorType.CATEGORICAL]
     
     # Set up random state
     rng = np.random.default_rng(seed)
@@ -146,7 +147,7 @@ def generate_latin_hypercube(
                 # Scale from [0, 1] to [min, max]
                 scaled = factor.min + lhs_samples[:, idx] * (factor.max - factor.min)
                 
-                if factor.type == FactorType.DISCRETE:
+                if factor.factor_type == FactorType.DISCRETE_NUMERIC:
                     # Round to nearest allowed level
                     scaled = np.array([min(factor.levels, key=lambda x: abs(x - val)) 
                                       for val in scaled])
@@ -331,7 +332,8 @@ def augment_latin_hypercube(
         combined = pd.concat([existing_clean, new_clean], ignore_index=True)
         
         # Score combined design
-        continuous_factors = [f for f in factors if f.type in (FactorType.CONTINUOUS, FactorType.DISCRETE)]
+        continuous_factors = [f for f in factors 
+                             if f.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC)]
         
         if continuous_factors:
             numeric_cols = [f.name for f in continuous_factors]
@@ -366,8 +368,9 @@ def augment_latin_hypercube(
     combined_design = pd.concat([existing_clean, best_additional_design], ignore_index=True)
     
     # Code existing design properly for output
-    continuous_factors = [f for f in factors if f.type in (FactorType.CONTINUOUS, FactorType.DISCRETE)]
-    categorical_factors = [f for f in factors if f.type == FactorType.CATEGORICAL]
+    continuous_factors = [f for f in factors 
+                         if f.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC)]
+    categorical_factors = [f for f in factors if f.factor_type == FactorType.CATEGORICAL]
     
     combined_coded_dict = {}
     if continuous_factors:

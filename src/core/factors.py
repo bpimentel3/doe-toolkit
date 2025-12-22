@@ -7,7 +7,7 @@ including continuous, discrete numeric, and categorical types.
 
 from enum import Enum
 from typing import List, Optional, Union, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 
@@ -43,8 +43,8 @@ class Factor:
         Factor name (e.g., "Temperature", "Pressure")
     factor_type : FactorType
         Type of factor (continuous, discrete_numeric, or categorical)
-    changeability : ChangeabilityLevel
-        How easy it is to change this factor
+    changeability : ChangeabilityLevel, optional
+        How easy it is to change this factor (default: EASY)
     levels : list, optional
         For discrete_numeric or categorical: list of possible values
         For continuous: [min, max] range
@@ -80,7 +80,7 @@ class Factor:
     """
     name: str
     factor_type: FactorType
-    changeability: ChangeabilityLevel
+    changeability: ChangeabilityLevel = field(default=ChangeabilityLevel.EASY)
     levels: Optional[List[Union[float, int, str]]] = None
     units: Optional[str] = None
     
@@ -192,6 +192,34 @@ class Factor:
     def is_discrete_numeric(self) -> bool:
         """Check if factor is discrete numeric."""
         return self.factor_type == FactorType.DISCRETE_NUMERIC
+    
+    @property
+    def min(self) -> Optional[float]:
+        """
+        Get minimum value for continuous/discrete numeric factors.
+        
+        Returns
+        -------
+        float or None
+            Minimum value, or None for categorical factors
+        """
+        if self.is_continuous() or self.is_discrete_numeric():
+            return min(self.levels) if self.levels else None
+        return None
+    
+    @property
+    def max(self) -> Optional[float]:
+        """
+        Get maximum value for continuous/discrete numeric factors.
+        
+        Returns
+        -------
+        float or None
+            Maximum value, or None for categorical factors
+        """
+        if self.is_continuous() or self.is_discrete_numeric():
+            return max(self.levels) if self.levels else None
+        return None
     
     def to_dict(self) -> Dict[str, Any]:
         """
