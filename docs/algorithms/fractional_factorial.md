@@ -1,300 +1,367 @@
-"""
-Fractional factorial design generation for DOE-Toolkit.
+# Fractional Factorial Design Algorithm
 
-This module implements 2^(k-p) fractional factorial designs with automatic
-generator selection and alias structure calculation.
-"""
+## Overview
 
-from typing import List, Dict, Optional, Tuple
-import pandas as pd
-import numpy as np
+A fractional factorial design uses a carefully chosen fraction of the runs from a full factorial design. Instead of running all 2^k combinations, we run only 2^(k-p) runs, where p is the number of generators.
 
-from src.core.factors import Factor, FactorType
-from src.core.design_generation import full_factorial
-from src.core.aliasing import (
-    FactorMapper,
-    GeneratorValidator,
-    AliasingEngine,
-    parse_generators,
-    get_standard_generators,
-    format_alias_table,
-    validate_resolution_achievable
-)
+**Fraction:** 1/2^p of the full factorial
 
+**Example:** A 2^(5-1) design runs 16 experiments instead of 32 (half-fraction)
 
-class FractionalFactorial:
-    """
-    Generate 2^(k-p) fractional factorial designs.
-    
-    A fractional factorial design uses a fraction (1/2^p) of the runs from a
-    full factorial design. Generators are used to create the fraction, which
-    determines the alias structure (confounding pattern).
-    
-    Parameters
-    ----------
-    factors : List[Factor]
-        List of 2-level factors (must all be 2-level for fractional factorial)
-    fraction : str
-        Fraction specification, e.g., "1/2", "1/4", "1/8"
-    resolution : int, optional
-        Desired resolution (III, IV, or V). If provided, generators are chosen
-        automatically to achieve this resolution.
-    generators : List[str], optional
-        Custom generator strings, e.g., ["D=ABC", "E=BCD"]
-        If not provided, generators are selected automatically based on resolution.
-    
-    Attributes
-    ----------
-    k : int
-        Number of factors
-    p : int
-        Number of generators (fraction = 1/2^p)
-    resolution : int
-        Design resolution
-    defining_relation : List[str]
-        Complete defining relation (generator words)
-    alias_structure : Dict
-        Complete alias structure for all effects
-    mapper : FactorMapper
-        Maps between real factor names and algebraic symbols
-    
-    Examples
-    --------
-    >>> # Create 2^(5-1) design (Resolution V)
-    >>> factors = [Factor(f"Factor_{i}", FactorType.CONTINUOUS,
-    ...                   ChangeabilityLevel.EASY, levels=[-1, 1])
-    ...            for i in range(5)]
-    >>> ff = FractionalFactorial(factors, fraction="1/2", resolution=5)
-    >>> design = ff.generate()
-    
-    >>> # Check alias structure
-    >>> print(ff.alias_structure['A'])  # Shows what A is aliased with
-    
-    References
-    ----------
-    .. [1] Box, G. E. P., Hunter, J. S., and Hunter, W. G. (2005).
-           Statistics for Experimenters, 2nd Ed. Wiley.
-    .. [2] Montgomery, D. C. (2017). Design and Analysis of Experiments, 9th Ed.
-    """
-    
-    def __init__(
-        self,
-        factors: List[Factor],
-        fraction: str,
-        resolution: Optional[int] = None,
-        generators: Optional[List[str]] = None
-    ):
-        # Validate inputs
-        self._validate_factors(factors)
-        
-        self.factors = factors
-        self.k = len(factors)
-        self.p = self._parse_fraction(fraction)
-        
-        # Check if fraction is valid
-        if self.p >= self.k:
-            raise ValueError(
-                f"Cannot create 1/{2**self.p} fraction of {self.k} factors"
-            )
-        
-        # Create factor name mapper
-        self.mapper = FactorMapper(factors)
-        
-        # Validate generator count
-        validator = GeneratorValidator(self.k, self.p, self.mapper)
-        validator.validate_generator_count()
-        
-        # Determine generators (in algebraic form)
-        if generators is not None:
-            # Custom generators provided
-            validator.validate_all(generators)
-            parsed_generators = parse_generators(generators)
-            self.resolution = self._get_resolution_from_generators(parsed_generators)
-            
-            # Validate resolution if specified
-            if resolution is not None and self.resolution < resolution:
-                raise ValueError(
-                    f"Generators achieve Resolution {self.resolution}, "
-                    f"not {resolution} as specified"
-                )
-        elif resolution is not None:
-            # Auto-select generators for target resolution
-            self.resolution = resolution
-            parsed_generators = self._select_generators(resolution)
-            
-            if parsed_generators is None:
-                raise ValueError(
-                    f"No standard generators available for k={self.k}, "
-                    f"p={self.p}, resolution={resolution}"
-                )
-        else:
-            # Default: highest resolution possible
-            self.resolution = self._get_max_resolution()
-            parsed_generators = self._select_generators(self.resolution)
-            
-            if parsed_generators is None:
-                raise ValueError(
-                    f"No standard generators available for k={self.k}, p={self.p}"
-                )
-        
-        # Store generators and build aliasing structure
-        self.generators_algebraic = parsed_generators
-        self.engine = AliasingEngine(self.k, parsed_generators)
-        self.defining_relation = self.engine.defining_relation
-        self.alias_structure = self.engine.alias_structure
-    
-    def _validate_factors(self, factors: List[Factor]) -> None:
-        """Validate that all factors are suitable for fractional factorial."""
-        if len(factors) < 3:
-            raise ValueError("Fractional factorial requires at least 3 factors")
-        
-        for factor in factors:
-            if not factor.is_continuous() and not factor.is_discrete_numeric():
-                raise ValueError(
-                    f"Factor '{factor.name}' must be continuous or discrete numeric. "
-                    f"Categorical factors not supported."
-                )
-            
-            if factor.is_discrete_numeric() and len(factor.levels) != 2:
-                raise ValueError(
-                    f"Factor '{factor.name}' must have exactly 2 levels, "
-                    f"got {len(factor.levels)}"
-                )
-    
-    def _parse_fraction(self, fraction: str) -> int:
-        """Parse fraction string to get p value."""
-        if fraction.startswith("1/"):
-            denominator = int(fraction[2:])
-            # Check if power of 2
-            if denominator & (denominator - 1) != 0:
-                raise ValueError(f"Fraction must be power of 2, got {denominator}")
-            p = int(np.log2(denominator))
-            return p
-        else:
-            raise ValueError(f"Fraction must be in format '1/2', '1/4', etc.")
-    
-    def _get_max_resolution(self) -> int:
-        """Determine maximum achievable resolution for given k and p."""
-        # Try resolutions from V down to III
-        for res in [5, 4, 3]:
-            if get_standard_generators(self.k, self.p, res) is not None:
-                return res
-        
-        # Fallback
-        return 3
-    
-    def _select_generators(self, resolution: int) -> Optional[List[Tuple[str, str]]]:
-        """Select generators to achieve desired resolution."""
-        return get_standard_generators(self.k, self.p, resolution)
-    
-    def _get_resolution_from_generators(self, generators: List[Tuple[str, str]]) -> int:
-        """Calculate resolution from generators."""
-        temp_engine = AliasingEngine(self.k, generators)
-        return temp_engine.resolution
-    
-    def generate(
-        self,
-        randomize: bool = True,
-        random_seed: Optional[int] = None,
-        n_blocks: Optional[int] = None
-    ) -> pd.DataFrame:
-        """
-        Generate the fractional factorial design.
-        
-        Parameters
-        ----------
-        randomize : bool
-            Whether to randomize run order
-        random_seed : int, optional
-            Random seed for reproducibility
-        n_blocks : int, optional
-            Number of blocks
-        
-        Returns
-        -------
-        pd.DataFrame
-            Design matrix with factor columns (using real names)
-        """
-        if random_seed is not None:
-            np.random.seed(random_seed)
-        
-        # Number of base factors (not generated)
-        n_base = self.k - self.p
-        base_factors = self.factors[:n_base]
-        
-        # Generate full factorial for base factors
-        base_design = full_factorial(base_factors, randomize=False)
-        
-        # Remove StdOrder and RunOrder columns
-        base_design = base_design[[f.name for f in base_factors]]
-        
-        # Generate additional factors using generators
-        for factor_symbol, expression in self.generators_algebraic:
-            # Get the factor object
-            factor_idx = ord(factor_symbol) - 65
-            gen_factor = self.factors[factor_idx]
-            
-            # Calculate values by multiplying base factors
-            values = np.ones(len(base_design))
-            for symbol in expression:
-                # Map symbol to real factor name
-                real_name = self.mapper.to_real(symbol)
-                values *= base_design[real_name].values
-            
-            base_design[gen_factor.name] = values
-        
-        # Reorder columns to match original factor order
-        design = base_design[[f.name for f in self.factors]]
-        
-        # Add standard order
-        design.insert(0, 'StdOrder', range(1, len(design) + 1))
-        
-        # Randomize if requested
-        if randomize:
-            design = design.sample(frac=1, random_state=random_seed).reset_index(drop=True)
-        
-        # Add run order
-        design.insert(1, 'RunOrder', range(1, len(design) + 1))
-        
-        # Add blocking if requested
-        if n_blocks is not None:
-            design = self._assign_blocks(design, n_blocks)
-        
-        return design
-    
-    def _assign_blocks(self, design: pd.DataFrame, n_blocks: int) -> pd.DataFrame:
-        """Assign runs to blocks."""
-        n_runs = len(design)
-        
-        if n_blocks > n_runs:
-            raise ValueError(f"Cannot have more blocks ({n_blocks}) than runs ({n_runs})")
-        
-        # Simple sequential assignment
-        runs_per_block = n_runs // n_blocks
-        extra_runs = n_runs % n_blocks
-        
-        blocks = []
-        for i in range(n_blocks):
-            block_size = runs_per_block + (1 if i < extra_runs else 0)
-            blocks.extend([i + 1] * block_size)
-        
-        design.insert(2, 'Block', blocks)
-        return design
-    
-    def get_alias_summary(self) -> pd.DataFrame:
-        """
-        Get a summary of the alias structure.
-        
-        Returns
-        -------
-        pd.DataFrame
-            Table showing each effect and what it's aliased with
-        """
-        return format_alias_table(self.alias_structure, self.mapper)
-    
-    def __repr__(self) -> str:
-        """String representation."""
-        return (
-            f"FractionalFactorial(k={self.k}, p={self.p}, "
-            f"resolution={self.resolution}, n_runs={2**(self.k-self.p)})"
-        )
+## Mathematical Background
+
+### Generators and Defining Relation
+
+A fractional factorial is created by selecting p **generators** - algebraic relationships that define which fraction of the design space to explore.
+
+**Example Generator:**
+```
+E = A × B × C × D
+```
+
+This means: When A, B, C, D are all positive (+1), E is positive. When any subset are negative, E follows the multiplication rule.
+
+**Defining Relation:**
+The generator E = ABCD implies:
+```
+I = ABCDE
+```
+
+Where I is the identity. This is the **defining relation** or **generator word**.
+
+### Confounding and Aliasing
+
+The cost of running fewer experiments is **confounding** (aliasing) - some effects cannot be separated.
+
+**Alias Formula:**
+Any effect X is aliased with:
+```
+X × (defining relation word)
+```
+
+**Example:** For I = ABCDE:
+- A is aliased with: A × ABCDE = BCDE
+- B is aliased with: B × ABCDE = ACDE  
+- AB is aliased with: AB × ABCDE = CDE
+
+**Interpretation:** We cannot distinguish between A and the 4-factor interaction BCDE.
+
+### Resolution
+
+Resolution indicates the degree of confounding:
+
+**Resolution III:**
+- Main effects confounded with 2-factor interactions
+- Example: A + BC (cannot separate main effect A from interaction BC)
+- Useful only for screening when interactions assumed negligible
+
+**Resolution IV:**
+- Main effects clear (not confounded with other main effects or 2FI)
+- 2-factor interactions confounded with other 2-factor interactions
+- Example: AB + CD
+- Good for identifying important main effects
+
+**Resolution V:**
+- Main effects clear
+- 2-factor interactions clear (not confounded with other 2FI)
+- 2-factor interactions confounded with 3-factor interactions
+- Excellent for estimating main effects and 2FI
+
+**Mathematical Definition:**
+Resolution R = minimum word length in defining relation (excluding I)
+
+### Design Selection Strategy
+
+**Common Designs:**
+
+| k | p | Runs | Resolution | Best For |
+|---|---|------|-----------|----------|
+| 4 | 1 | 8 | IV | Small studies, expect interactions |
+| 5 | 1 | 16 | V | Good balance, clear 2FI |
+| 6 | 2 | 16 | IV | Many factors, screening |
+| 7 | 3 | 16 | IV | Large screening studies |
+| 8 | 4 | 16 | IV | Very large screening |
+
+**Selection Rules:**
+1. For k ≤ 5: Use Resolution V (full 2FI estimation)
+2. For k = 6-7: Use Resolution IV (main effects + some 2FI)
+3. For k ≥ 8: Use Resolution III or IV for screening
+
+## Generator Selection
+
+### Standard Generators
+
+Well-established generator sets maximize resolution:
+
+**2^(5-1) Resolution V:**
+```
+E = ABCD
+Defining Relation: I = ABCDE
+```
+
+**2^(7-3) Resolution IV:**
+```
+E = ABC
+F = BCD  
+G = ACD
+Defining Relation: I = ABCE = BCDF = ACDG = ...
+```
+
+The complete defining relation includes all products of generators.
+
+### Custom Generators
+
+Users can specify custom generators for special purposes:
+
+**Requirements:**
+1. Each generator must involve k-p factors
+2. Generators should be independent
+3. Higher word length → higher resolution
+
+**Example Custom Generator:**
+For a 2^(6-2) design emphasizing factors A and B:
+```
+E = ACD (avoids B)
+F = ABD (includes both A and B)
+```
+
+## Implementation Details
+
+### Algorithm Steps
+
+**1. Base Design Generation**
+```
+Generate 2^(k-p) full factorial for first k-p factors
+```
+
+**2. Generated Factor Calculation**
+For each generator (e.g., E = ABC):
+```python
+E_values = A_values × B_values × C_values
+```
+
+Where multiplication is element-wise for all runs.
+
+**3. Alias Structure Calculation**
+
+For each effect E:
+```
+Aliases = {E × W for W in defining_relation if W ≠ I}
+```
+
+Simplify using mod-2 algebra:
+- A × A = I (any factor squared is identity)
+- A × B × A = B (cancellation)
+- ABCABC = I
+
+**Example Simplification:**
+```
+E × ABCDE = ABCD (E cancels)
+AB × ABCDE = CDE (A and B cancel)
+```
+
+### Computational Complexity
+
+**Time Complexity:**
+- Design generation: O(2^(k-p) × k)
+- Alias calculation: O(2^p × k^2)
+  - Must evaluate all 2^p words in defining relation
+  - For each of O(k^2) effects
+
+**Space Complexity:**
+- O(2^(k-p) × k) for design matrix
+- O(2^p) for defining relation
+- O(k^2) for alias structure
+
+### Example Calculation
+
+**Problem:** Create 2^(5-1) design with E = ABCD
+
+**Step 1: Generate base factorial for A, B, C, D**
+```
+Run  A   B   C   D
+1   -1  -1  -1  -1
+2   +1  -1  -1  -1
+3   -1  +1  -1  -1
+...
+16  +1  +1  +1  +1
+```
+
+**Step 2: Calculate E = A × B × C × D**
+```
+Run  A   B   C   D   E
+1   -1  -1  -1  -1  +1  ((-1)×(-1)×(-1)×(-1) = +1)
+2   +1  -1  -1  -1  -1  ((+1)×(-1)×(-1)×(-1) = -1)
+3   -1  +1  -1  -1  -1
+...
+16  +1  +1  +1  +1  +1
+```
+
+**Step 3: Defining Relation**
+```
+I = ABCDE
+```
+
+**Step 4: Alias Structure**
+```
+A: aliased with BCDE
+B: aliased with ACDE
+C: aliased with ABDE
+D: aliased with ABCE
+E: aliased with ABCD
+
+AB: aliased with CDE
+AC: aliased with BDE
+AD: aliased with BCE
+AE: aliased with BCD
+BC: aliased with ADE
+BD: aliased with ACE
+BE: aliased with ACD
+CD: aliased with ABE
+CE: aliased with ABD
+DE: aliased with ABC
+```
+
+Resolution = 5 (minimum word length = 5)
+
+## Analysis Considerations
+
+### Effect Estimation
+
+When analyzing fractional factorial data:
+
+**Resolution V:**
+- Estimate main effects directly
+- Estimate 2FI directly  
+- Both are unbiased (assuming 3FI+ negligible)
+
+**Resolution IV:**
+- Estimate main effects directly (unbiased)
+- 2FI estimates are biased by other 2FI
+- Use effect sparsity principle and subject matter knowledge
+
+**Resolution III:**
+- Main effect estimates biased by 2FI
+- Can only separate if strong effect hierarchy
+- Typically used for screening only
+
+### Effect Sparsity Principle
+
+**Assumption:** Only a few effects are active (large)
+
+**Implications:**
+- In alias strings like AB + CD, typically only one is large
+- Use half-normal plots to identify active effects
+- Active effects fall off the line
+- Follow-up experiments can de-alias if needed
+
+### Sequential Experimentation
+
+**Fold-over Designs:**
+Run the opposite fraction to de-alias effects:
+```
+Original: E = +ABCD
+Fold-over: E = -ABCD
+Combined: Full 2^5 factorial
+```
+
+**Partial fold-over:**
+Reverse signs of one factor to de-alias specific interactions.
+
+## Advantages and Limitations
+
+### Advantages
+
+1. **Efficiency**
+   - Run half (or less) the experiments
+   - Still get main effects (if Resolution ≥ IV)
+   
+2. **Economical**
+   - Fraction cost = Fraction × (Full cost)
+   - 2^(8-4) costs 1/16 of 2^8
+
+3. **Sequential Strategy**
+   - Start with screening design
+   - Augment if needed
+   - Never run more than necessary
+
+4. **Effect Hierarchy**
+   - Lower-order effects usually larger
+   - High-order interactions typically negligible
+   - Design takes advantage of this
+
+### Limitations
+
+1. **Confounding**
+   - Cannot estimate all effects
+   - Some effects inseparable
+   - Resolution III: Main effects confounded with 2FI
+
+2. **Assumptions Required**
+   - Effect sparsity
+   - Hierarchy (lower order > higher order)
+   - If violated, misleading results
+
+3. **Model Flexibility**
+   - Cannot fit full model
+   - Predetermined by resolution
+   - May miss important interactions
+
+4. **Analysis Complexity**
+   - Must understand alias structure
+   - Interpretation requires more care
+   - Effect estimates may be biased
+
+## When to Use Fractional Factorial
+
+**Use Fractional Factorial when:**
+- Many factors (k ≥ 5)
+- Resources limited
+- Interactions expected to be small
+- Screening is the goal
+- Sequential experimentation acceptable
+
+**Use Full Factorial when:**
+- Few factors (k ≤ 4)
+- Interactions critical
+- Complete characterization needed
+- Resources permit
+- No confounding acceptable
+
+## Standard Generator Tables
+
+### 2^(k-1) Designs (Half-Fractions)
+
+| k | Generator | Resolution | Runs |
+|---|-----------|-----------|------|
+| 4 | D=ABC | IV | 8 |
+| 5 | E=ABCD | V | 16 |
+| 6 | F=ABCDE | VI | 32 |
+| 7 | G=ABCDEF | VII | 64 |
+
+### 2^(k-2) Designs (Quarter-Fractions)
+
+| k | Generators | Resolution | Runs |
+|---|------------|-----------|------|
+| 5 | D=AB, E=AC | III | 8 |
+| 6 | E=ABC, F=BCD | IV | 16 |
+| 7 | F=ABCD, G=ABCE | IV | 32 |
+
+### 2^(k-3) Designs (Eighth-Fractions)
+
+| k | Generators | Resolution | Runs |
+|---|------------|-----------|------|
+| 7 | E=ABC, F=BCD, G=ACD | IV | 16 |
+| 8 | F=ABC, G=ABD, H=ACDE | IV | 32 |
+
+## References
+
+1. Box, G. E. P., Hunter, J. S., and Hunter, W. G. (2005). *Statistics for Experimenters*, 2nd Ed. Wiley.
+
+2. Montgomery, D. C. (2017). *Design and Analysis of Experiments*, 9th Ed. Wiley.
+
+3. Wu, C. F. J., and Hamada, M. S. (2009). *Experiments: Planning, Analysis, and Optimization*, 2nd Ed. Wiley.
+
+4. Box, G. E. P., and Wilson, K. B. (1951). On the Experimental Attainment of Optimum Conditions. *Journal of the Royal Statistical Society, Series B*, 13, 1-45.
+
+5. National Institute of Standards and Technology (NIST). Engineering Statistics Handbook, Section 5.3.3: Fractional Factorial Designs.
