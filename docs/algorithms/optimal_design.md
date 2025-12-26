@@ -155,6 +155,12 @@ LinearConstraint(
     bound=1.0,
     constraint_type='eq'  # =
 )
+"""Note: While equality constraints of the form x1 + x2 + x3 = 1 can be specified,
+full mixture designs (simplex geometry, Scheffé polynomials, mixture model
+parameterization, or mixture-specific candidate sets) are NOT yet supported.
+The algorithm will treat these as standard linear constraints rather than a
+true mixture design."
+
 ```
 
 ### Constraint Workflow
@@ -575,6 +581,11 @@ UserWarning: High condition number (347.2). Design may be ill-conditioned.
    - I-optimal (minimize prediction variance) not available
    - A-optimal (minimize trace) not available
    - G-optimal (minimize maximum prediction variance) not available
+
+4. **Mixture designs not yet supported**
+   - Equality constraints like x1 + x2 + x3 = 1 are allowed, but the algorithm
+     does not implement mixture-specific model structures (Scheffé models),
+     simplex candidate sets, or mixture geometry.
 
 ### Planned Enhancements (Post-MVP)
 
