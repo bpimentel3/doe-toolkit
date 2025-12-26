@@ -4,12 +4,13 @@ D-Optimal Design Generation for Design of Experiments.
 OPTIMIZED VERSION with:
 - Sherman-Morrison reuse (no duplicate computation)
 - Efficiency benchmarking against known designs (FF, CCD)
+- Simplified naive LHS candidate generation
 
 Fast implementation using:
 - Meyer & Nachtsheim's CEXCH (full row exchange)
 - Sherman-Morrison determinant updates with intermediate reuse
 - Restricted candidate subsets
-- Dimension-aware candidate pools
+- Naive LHS candidate pools (no stratification)
 
 References:
     [1] Meyer, R. K., & Nachtsheim, C. J. (1995). The coordinate-exchange 
@@ -123,49 +124,18 @@ class DOptimalityCriterion(OptimalityCriterion):
 
 
 # ============================================================
-# SECTION 3: CANDIDATE POOL GENERATION (DIMENSION-AWARE)
+# SECTION 3: CANDIDATE POOL GENERATION (SIMPLIFIED)
 # ============================================================
 
 @dataclass
 class CandidatePoolConfig:
     """Configuration for candidate pool generation."""
     
-    n_lhs_raw: int = 500
-    n_lhs_final: int = 100
-    boundary_threshold: float = 0.75
-    boundary_ratio: float = 0.8
+    lhs_multiplier: int = 5  # Generate n_runs * lhs_multiplier LHS points
     include_vertices: bool = True
     include_axial: bool = True
     include_center: bool = True
     alpha_axial: float = 1.0
-    
-    @classmethod
-    def for_criterion_and_size(cls, criterion_type: str, k: int) -> 'CandidatePoolConfig':
-        """Create dimension-aware config."""
-        if criterion_type == 'D':
-            if k <= 3:
-                return cls(
-                    n_lhs_raw=300,
-                    n_lhs_final=50,
-                    boundary_ratio=0.8,
-                    boundary_threshold=0.75
-                )
-            elif k <= 5:
-                return cls(
-                    n_lhs_raw=500,
-                    n_lhs_final=100,
-                    boundary_ratio=0.8,
-                    boundary_threshold=0.75
-                )
-            else:
-                return cls(
-                    n_lhs_raw=1000,
-                    n_lhs_final=150,
-                    boundary_ratio=0.8,
-                    boundary_threshold=0.75
-                )
-        else:
-            return cls()
 
 
 def generate_vertices(k: int) -> np.ndarray:
@@ -189,52 +159,24 @@ def generate_axial_points(k: int, alpha: float = 1.0) -> np.ndarray:
     return np.array(points)
 
 
-def generate_stratified_lhs(
-    k: int,
-    n_raw: int,
-    n_final: int,
-    boundary_threshold: float,
-    boundary_ratio: float,
-    seed: Optional[int] = None
-) -> np.ndarray:
-    """Generate stratified Latin Hypercube sample."""
-    rng = np.random.default_rng(seed)
-    sampler = LatinHypercube(d=k, seed=seed)
-    lhs_01 = sampler.random(n=n_raw)
-    lhs = 2 * lhs_01 - 1
-    
-    max_norm = np.max(np.abs(lhs), axis=1)
-    is_boundary = max_norm >= boundary_threshold
-    boundary_indices = np.where(is_boundary)[0]
-    interior_indices = np.where(~is_boundary)[0]
-    
-    n_boundary = int(np.round(boundary_ratio * n_final))
-    n_interior = n_final - n_boundary
-    
-    selected = []
-    
-    if len(boundary_indices) >= n_boundary:
-        selected_boundary = rng.choice(boundary_indices, size=n_boundary, replace=False)
-        selected.extend(selected_boundary)
-    else:
-        selected.extend(boundary_indices)
-        n_interior += (n_boundary - len(boundary_indices))
-    
-    if len(interior_indices) >= n_interior:
-        selected_interior = rng.choice(interior_indices, size=n_interior, replace=False)
-        selected.extend(selected_interior)
-    else:
-        selected.extend(interior_indices)
-    
-    return lhs[selected]
-
-
 def generate_candidate_pool(
     factors: List[Factor],
+    n_runs: int,
     config: CandidatePoolConfig,
     seed: Optional[int] = None
 ) -> np.ndarray:
-    """Generate dimension-aware candidate pool."""
+    """
+    Generate candidate pool with structured points + naive LHS.
+    
+    Strategy:
+    - Include factorial vertices (2^k points)
+    - Include axial/star points (2k points)
+    - Include center point
+    - Add n_runs * lhs_multiplier points from naive LHS (no stratification)
+    
+    This gives optimizer flexibility to choose interior or boundary points
+    based on criterion, rather than biasing the candidate pool.
+    """
     k = len(factors)
     candidates_list = []
     
@@ -250,15 +192,13 @@ def generate_candidate_pool(
         center = np.zeros((1, k))
         candidates_list.append(center)
     
-    lhs = generate_stratified_lhs(
-        k=k,
-        n_raw=config.n_lhs_raw,
-        n_final=config.n_lhs_final,
-        boundary_threshold=config.boundary_threshold,
-        boundary_ratio=config.boundary_ratio,
-        seed=seed
-    )
-    candidates_list.append(lhs)
+    # Naive LHS - no stratification by boundary/interior
+    # Just generate n_runs * lhs_multiplier points uniformly
+    n_lhs = n_runs * config.lhs_multiplier
+    sampler = LatinHypercube(d=k, seed=seed)
+    lhs_01 = sampler.random(n=n_lhs)
+    lhs_coded = 2 * lhs_01 - 1  # Scale to [-1, 1]
+    candidates_list.append(lhs_coded)
     
     candidates = np.vstack(candidates_list)
     candidates = np.unique(np.round(candidates, decimals=6), axis=0)
@@ -744,6 +684,10 @@ def compute_benchmark_determinant(
     """
     Compute determinant of benchmark design for comparison.
     
+    Uses designs constrained to [-1, 1]^k space for fair comparison:
+    - Linear models: Full Factorial 2^k
+    - Quadratic models: Face-Centered CCD (alpha='face_centered', stays in bounds)
+    
     Returns
     -------
     det : float
@@ -762,7 +706,8 @@ def compute_benchmark_determinant(
         return det_ff, f"Full Factorial 2^{k}"
     
     elif model_type in ('interaction', 'quadratic'):
-        # Benchmark: CCD (rotatable)
+        # Benchmark: Face-Centered CCD (alpha='face_centered')
+        # This stays within [-1, 1]^k bounds for fair comparison with D-optimal
         from src.core.response_surface import CentralCompositeDesign
         
         # Create temporary CCD
@@ -772,9 +717,10 @@ def compute_benchmark_determinant(
             for i in range(k)
         ]
         
+        # Use face-centered design to stay in bounds
         ccd = CentralCompositeDesign(
             factors=temp_factors,
-            alpha='rotatable',
+            alpha='face',  # Face-centered: axial points on cube faces (alpha=1)
             center_points=6 if k <= 4 else 5
         )
         ccd_design = ccd.generate(randomize=False)
@@ -785,7 +731,7 @@ def compute_benchmark_determinant(
         
         X_ccd = model_builder(ccd_coded)
         det_ccd = np.linalg.det(X_ccd.T @ X_ccd)
-        return det_ccd, f"CCD (rotatable, k={k})"
+        return det_ccd, f"Face-Centered CCD (k={k})"
     
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
@@ -853,11 +799,11 @@ def generate_d_optimal_design(
             f"n_runs ({n_runs}) must be >= n_parameters ({n_params})"
         )
     
-    # Generate dimension-aware candidate pool
+    # Generate candidate pool (simplified - no stratification)
     if candidate_config is None:
-        candidate_config = CandidatePoolConfig.for_criterion_and_size('D', k)
+        candidate_config = CandidatePoolConfig(lhs_multiplier=5)
     
-    candidates = generate_candidate_pool(factors, candidate_config, seed)
+    candidates = generate_candidate_pool(factors, n_runs, candidate_config, seed)
     
     # Apply feasibility filter and handle constrained candidate pools
     if constraints:
@@ -919,6 +865,7 @@ def generate_d_optimal_design(
                 seed=seed
             )
             
+
             if len(candidates_augmented) >= min_candidates_needed * 0.7:
                 # Augmentation helped significantly
                 candidates = candidates_augmented
