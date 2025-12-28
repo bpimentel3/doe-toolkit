@@ -8,9 +8,11 @@ Tests cover:
 - Blocked designs (fixed and random effects)
 - Diagnostic computations
 - LogWorth computation (no plotting tests - separation of concerns)
+- Degrees of freedom validation
 """
 
 import pytest
+import warnings
 import numpy as np
 import pandas as pd
 from src.core.analysis import (
@@ -532,6 +534,127 @@ class TestDiagnostics:
         assert 'shapiro_wilk' in results.diagnostics
         assert 'statistic' in results.diagnostics['shapiro_wilk']
         assert 'p_value' in results.diagnostics['shapiro_wilk']
+
+
+class TestDegreesOfFreedom:
+    """Test degrees of freedom validation."""
+    
+    def test_saturated_model_warns_and_fits(self):
+        """Test that saturated model (df=0) warns but still fits."""
+        factors = [
+            Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
+            Factor("B", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1])
+        ]
+        
+        # 4 runs, 4 parameters (Intercept + A + B + A:B) = 0 df
+        design = full_factorial(factors, randomize=False)
+        response = 10 + 2*design['A'] + 3*design['B'] + 4*design['A']*design['B']
+        
+        analysis = ANOVAAnalysis(design, response, factors)
+        
+        # Should warn about saturation but not error
+        with pytest.warns(UserWarning, match="Saturated model.*zero degrees of freedom"):
+            results = analysis.fit(['A', 'B', 'A*B'])
+        
+        # Should still return results (like JMP does)
+        assert results is not None
+        assert results.r_squared == 1.0  # Perfect fit
+        # ANOVA table will be empty or incomplete
+        # But coefficients should be available
+        assert 'A' in results.effect_estimates.index
+    
+    def test_oversaturated_model_warns(self):
+        """Test that oversaturated model (df<0) warns."""
+        factors = [
+            Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
+            Factor("B", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1])
+        ]
+        
+        # 4 runs, but try to fit 5+ parameters
+        design = full_factorial(factors, randomize=False)
+        response = 10 + 2*design['A'] + np.random.normal(0, 0.1, len(design))
+        
+        # Add a third factor manually to create oversaturation
+        design['C'] = [-1, 1, -1, 1]
+        factors_extended = factors + [
+            Factor("C", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1])
+        ]
+        
+        analysis = ANOVAAnalysis(design, response, factors_extended)
+        
+        # Should warn about oversaturation
+        with pytest.warns(UserWarning, match="Oversaturated model"):
+            # The fit will likely fail, but we warned first
+            try:
+                results = analysis.fit(['A', 'B', 'C', 'A*B'])
+            except:
+                # Expected - oversaturated models cannot be fit
+                pass
+    
+    def test_low_df_warns(self):
+        """Test that low degrees of freedom produces warning."""
+        factors = [
+            Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
+            Factor("B", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1])
+        ]
+        
+        # 5 runs, 4 parameters = 1 df (low but not zero)
+        design = full_factorial(factors, n_center_points=1, randomize=False)
+        response = 10 + 2*design['A'] + 3*design['B'] + np.random.normal(0, 0.5, len(design))
+        
+        analysis = ANOVAAnalysis(design, response, factors)
+        
+        with pytest.warns(UserWarning, match="Low degrees of freedom"):
+            results = analysis.fit(['A', 'B', 'A*B'])
+        
+        # Should still fit successfully (just warned)
+        assert results is not None
+    
+    def test_adequate_df_no_warning(self):
+        """Test that adequate degrees of freedom produces no warning."""
+        factors = [
+            Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
+            Factor("B", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1])
+        ]
+        
+        # 8 runs, 3 parameters (Intercept + A + B) = 5 df (adequate)
+        design = full_factorial(factors, n_center_points=4, randomize=False)
+        response = 10 + 2*design['A'] + 3*design['B'] + np.random.normal(0, 0.5, len(design))
+        
+        analysis = ANOVAAnalysis(design, response, factors)
+        
+        # Should not warn about df
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # Turn warnings into errors
+            try:
+                results = analysis.fit(['A', 'B'])
+                assert results is not None
+            except UserWarning as w:
+                # If warning is about hierarchy, that's OK
+                if "hierarchy" not in str(w):
+                    raise
+    
+    def test_split_plot_whole_plot_warning(self):
+        """Test warning for insufficient whole-plots in split-plot design."""
+        factors = [
+            Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.HARD, levels=[-1, 1]),
+            Factor("B", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1])
+        ]
+        
+        # Only 2 whole-plots (minimal)
+        design = pd.DataFrame({
+            'A': [-1, -1, 1, 1],
+            'B': [-1, 1, -1, 1],
+            'WholePlot': [1, 1, 2, 2]
+        })
+        response = np.array([10, 15, 20, 25])
+        
+        analysis = ANOVAAnalysis(design, response, factors)
+        
+        with pytest.warns(UserWarning, match="whole-plots"):
+            results = analysis.fit(['A', 'B'])
+        
+        assert results is not None
 
 
 # Integration test with validation data would go here
