@@ -370,7 +370,7 @@ class TestSingleResponseOptimization:
         
         # Fit model
         analysis = ANOVAAnalysis(design, response, simple_factors)
-        results = analysis.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results = analysis.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         # Optimize
         opt_result = optimize_response(
@@ -399,7 +399,7 @@ class TestSingleResponseOptimization:
         )
         
         analysis = ANOVAAnalysis(design, response, simple_factors)
-        results = analysis.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results = analysis.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         opt_result = optimize_response(
             results, simple_factors, objective='minimize', seed=42
@@ -424,7 +424,7 @@ class TestSingleResponseOptimization:
         )
         
         analysis = ANOVAAnalysis(design, response, simple_factors)
-        results = analysis.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results = analysis.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         opt_result = optimize_response(
             results, simple_factors, objective='maximize', seed=42
@@ -451,7 +451,7 @@ class TestSingleResponseOptimization:
         )
         
         analysis = ANOVAAnalysis(design, response, simple_factors)
-        results = analysis.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results = analysis.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         # Target value of 22
         opt_result = optimize_response(
@@ -477,7 +477,7 @@ class TestSingleResponseOptimization:
         )
         
         analysis = ANOVAAnalysis(design, response, simple_factors)
-        results = analysis.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results = analysis.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         opt_result = optimize_response(
             results, simple_factors, objective='maximize', seed=42
@@ -507,7 +507,7 @@ class TestSingleResponseOptimization:
         )
         
         analysis = ANOVAAnalysis(design, response, simple_factors)
-        results = analysis.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results = analysis.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         # Restrict X1 to [0, 1]
         bounds = {'X1': (0, 1), 'X2': (-1, 1)}
@@ -538,7 +538,7 @@ class TestSingleResponseOptimization:
         )
         
         analysis = ANOVAAnalysis(design, response, simple_factors)
-        results = analysis.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results = analysis.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         # Add constraint
         constraint = LinearConstraint(
@@ -595,10 +595,10 @@ class TestMultiResponseOptimization:
         
         # Fit models
         analysis1 = ANOVAAnalysis(design1, response1, simple_factors)
-        results1 = analysis1.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results1 = analysis1.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         analysis2 = ANOVAAnalysis(design2, response2, simple_factors)
-        results2 = analysis2.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results2 = analysis2.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         # Configure desirability
         df = DesirabilityFunction(['Y1', 'Y2'])
@@ -651,10 +651,10 @@ class TestMultiResponseOptimization:
         )
         
         analysis1 = ANOVAAnalysis(design1, response1, simple_factors)
-        results1 = analysis1.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results1 = analysis1.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         analysis2 = ANOVAAnalysis(design2, response2, simple_factors)
-        results2 = analysis2.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results2 = analysis2.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         # Configure desirability
         df = DesirabilityFunction(['Y1', 'Y2'])
@@ -700,10 +700,10 @@ class TestMultiResponseOptimization:
         )
         
         analysis1 = ANOVAAnalysis(design1, response1, simple_factors)
-        results1 = analysis1.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results1 = analysis1.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         analysis2 = ANOVAAnalysis(design2, response2, simple_factors)
-        results2 = analysis2.fit(['X1', 'X2', 'X1^2', 'X2^2'])
+        results2 = analysis2.fit(['X1', 'X2', 'I(X1**2)', 'I(X2**2)'])
         
         models = {'Y1': results1, 'Y2': results2}
         
@@ -792,7 +792,7 @@ class TestEdgeCases:
         )
         
         analysis = ANOVAAnalysis(design, response, three_factors)
-        results = analysis.fit(['X1', 'X2', 'X3', 'X1^2', 'X2^2', 'X3^2'])
+        results = analysis.fit(['X1', 'X2', 'X3', 'I(X1**2)', 'I(X2**2)', 'I(X3**2)'])
         
         opt_result = optimize_response(
             results, three_factors, objective='maximize', seed=42

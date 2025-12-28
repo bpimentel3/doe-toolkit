@@ -199,7 +199,10 @@ def optimize_response(
     def objective_func(x: np.ndarray) -> float:
         """Objective to minimize (negate for maximize)."""
         pred_df = pd.DataFrame([x], columns=factor_names)
-        y_pred = model.predict(pred_df)[0]
+        try:
+            y_pred = model.get_prediction(pred_df).predicted_mean[0]
+        except Exception:
+            y_pred = model.predict(pred_df)[0]
         
         if objective == 'maximize':
             return -y_pred  # Negate for minimization
@@ -679,9 +682,13 @@ def optimize_desirability(
         # Predict all responses
         responses = {}
         for response_name, anova_results in anova_results_dict.items():
-            model = anova_results.fitted_model
-            y_pred = model.predict(pred_df)[0]
+            model_i = anova_results.fitted_model
+            try:
+                y_pred = model_i.get_prediction(pred_df).predicted_mean[0]
+            except Exception:
+                y_pred = model_i.predict(pred_df)[0]
             responses[response_name] = y_pred
+
         
         # Evaluate overall desirability
         D = desirability_func.evaluate(responses)
