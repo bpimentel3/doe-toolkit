@@ -502,6 +502,11 @@ class ANOVAAnalysis:
         -------
         ANOVAResults
             Analysis results object with precomputed LogWorth values
+        
+        Raises
+        ------
+        ValueError
+            If model has insufficient degrees of freedom for error estimation
         """
         # Validate terms
         validate_model_terms(model_terms, self.factors, self.design)
@@ -521,6 +526,9 @@ class ANOVAAnalysis:
         
         # Store model terms
         self.current_model = model_terms
+        
+        # Check degrees of freedom BEFORE fitting
+        self._validate_degrees_of_freedom(model_terms)
         
         # Fit appropriate model type
         if self.design_structure['is_split_plot']:
@@ -623,12 +631,23 @@ class ANOVAAnalysis:
         is_split_plot: bool
     ) -> ANOVAResults:
         """Build ANOVAResults object from fitted model."""
-        # ANOVA table
-        if hasattr(fitted_model, 'anova_table'):
-            anova_table = fitted_model.anova_table()
-        else:
-            # For OLS, compute ANOVA table
-            anova_table = sm.stats.anova_lm(fitted_model, typ=2)
+        # ANOVA table - handle saturated models gracefully
+        try:
+            if hasattr(fitted_model, 'anova_table'):
+                anova_table = fitted_model.anova_table()
+            else:
+                # For OLS, compute ANOVA table
+                anova_table = sm.stats.anova_lm(fitted_model, typ=2)
+        except (ValueError, np.linalg.LinAlgError) as e:
+            # Saturated or oversaturated model - ANOVA table cannot be computed
+            warnings.warn(
+                f"Could not compute ANOVA table: {str(e)}\n"
+                f"This typically occurs with saturated (df=0) or oversaturated models.\n"
+                f"Coefficient estimates will still be available.",
+                UserWarning
+            )
+            # Create empty ANOVA table
+            anova_table = pd.DataFrame()
         
         # Effect estimates
         effect_estimates = pd.DataFrame({
@@ -662,14 +681,16 @@ class ANOVAAnalysis:
         diagnostics = self._compute_diagnostics(residuals, fitted_values)
         
         # Compute LogWorth values (no plotting - for UI layer)
+        # Handle case where p-values might be NaN for saturated models
         logworth_df = effect_estimates.copy()
         logworth_df = logworth_df[logworth_df.index != 'Intercept']
         
         # Compute LogWorth, handling perfect fits (p=0 -> LogWorth=infinity)
-        # Cap at reasonable maximum to avoid inf
+        # and missing p-values (saturated models)
         logworth_values = []
         for p in logworth_df['p_value']:
-            if p <= 0 or np.isnan(p):
+            if pd.isna(p) or p <= 0:
+                # No p-value available (saturated) or zero p-value
                 logworth_values.append(np.nan)
             elif p < 1e-16:  # Near-zero p-value
                 logworth_values.append(16.0)  # Cap at -log10(1e-16)
@@ -707,6 +728,82 @@ class ANOVAAnalysis:
             diagnostics['shapiro_wilk'] = {'statistic': stat, 'p_value': pval}
         
         return diagnostics
+    
+    def _validate_degrees_of_freedom(self, model_terms: List[str]) -> None:
+        """
+        Validate degrees of freedom and warn about saturated/oversaturated models.
+        
+        Does NOT raise errors - allows fitting saturated models like JMP does.
+        
+        Parameters
+        ----------
+        model_terms : List[str]
+            Model terms to be fitted
+        
+        Warnings
+        --------
+        UserWarning
+            For saturated (df=0) or oversaturated (df<0) models
+            For low df (df < 3) models
+            For split-plot designs with insufficient whole-plots
+        """
+        n_runs = len(self.data)
+        
+        # Count parameters (including intercept if present)
+        n_params = len([t for t in model_terms if t != '1']) + 1  # +1 for intercept
+        
+        # Calculate degrees of freedom for error
+        df_error = n_runs - n_params
+        
+        if df_error < 0:
+            warnings.warn(
+                f"Oversaturated model: more parameters than observations!\n"
+                f"  Runs: {n_runs}\n"
+                f"  Parameters: {n_params} (including intercept)\n"
+                f"  DF for error: {df_error}\n\n"
+                f"Model cannot be fit - not enough data to estimate all parameters.\n"
+                f"The fit will fail. To fix:\n"
+                f"  1. Add more runs (recommended)\n"
+                f"  2. Remove terms from model\n"
+                f"  3. Use a simpler model (remove interactions/quadratics)",
+                UserWarning
+            )
+        elif df_error == 0:
+            warnings.warn(
+                f"Saturated model: zero degrees of freedom for error.\n"
+                f"  Runs: {n_runs}\n"
+                f"  Parameters: {n_params} (including intercept)\n"
+                f"  DF for error: 0\n\n"
+                f"Perfect fit will be achieved, but:\n"
+                f"  • No residual variance estimate\n"
+                f"  • No F-tests or p-values available\n"
+                f"  • Cannot assess significance of effects\n"
+                f"  • ANOVA table will be incomplete\n\n"
+                f"To enable statistical inference:\n"
+                f"  1. Add center points or replicates\n"
+                f"  2. Reduce model complexity",
+                UserWarning
+            )
+        elif df_error < 3:
+            warnings.warn(
+                f"Low degrees of freedom for error: {df_error}.\n"
+                f"  Runs: {n_runs}\n"
+                f"  Parameters: {n_params}\n\n"
+                f"Statistical inference will be unreliable with df < 3.\n"
+                f"Consider adding center points or replicates.\n"
+                f"Recommended: df_error >= 3-5 for reliable results.",
+                UserWarning
+            )
+        
+        # Additional check for split-plot designs
+        if self.design_structure['is_split_plot']:
+            n_whole_plots = self.data[self.design_structure['whole_plot_column']].nunique()
+            if n_whole_plots < 3:
+                warnings.warn(
+                    f"Only {n_whole_plots} whole-plots in split-plot design.\n"
+                    f"Recommended: >= 3 whole-plots for reliable whole-plot error estimation.",
+                    UserWarning
+                )
     
     def update_model(
         self,
