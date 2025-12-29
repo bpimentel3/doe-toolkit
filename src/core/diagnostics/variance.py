@@ -27,7 +27,7 @@ def build_model_matrix(
     factors : List[Factor]
         Factor definitions
     model_terms : List[str]
-        Model terms (e.g., ['1', 'A', 'B', 'A*B', 'A^2'])
+        Model terms (e.g., ['1', 'A', 'B', 'A*B', 'I(A**2)'])
     
     Returns
     -------
@@ -37,6 +37,13 @@ def build_model_matrix(
     Notes
     -----
     This builds the X matrix used in regression: Y = Xβ + ε
+    
+    Supports:
+    - Intercept: '1'
+    - Main effects: 'A', 'B'
+    - Interactions: 'A*B'
+    - Quadratic (patsy notation): 'I(A**2)'
+    - Quadratic (caret notation): 'A^2'
     
     Examples
     --------
@@ -53,15 +60,22 @@ def build_model_matrix(
         if term == '1':
             # Intercept
             columns.append(np.ones(n_runs))
-        elif '*' in term:
-            # Interaction
-            factor_names = term.split('*')
-            col = np.ones(n_runs)
-            for fname in factor_names:
-                col *= factor_dict[fname.strip()]
-            columns.append(col)
+        
+        elif term.startswith('I(') and '**' in term:
+            # Quadratic with I() notation: I(A**2)
+            # Extract: I(A**2) -> A, 2
+            inner = term[2:-1]  # Remove 'I(' and ')'
+            parts = inner.split('**')
+            fname = parts[0].strip()
+            power = int(parts[1].strip())
+            
+            if fname not in factor_dict:
+                raise ValueError(f"Unknown factor in term '{term}': {fname}")
+            
+            columns.append(factor_dict[fname] ** power)
+        
         elif '^' in term or '**' in term:
-            # Quadratic
+            # Quadratic without I(): A^2 or A**2
             if '^' in term:
                 parts = term.split('^')
             else:
@@ -69,9 +83,27 @@ def build_model_matrix(
             
             fname = parts[0].strip()
             power = int(parts[1].strip())
+            
+            if fname not in factor_dict:
+                raise ValueError(f"Unknown factor in term '{term}': {fname}")
+            
             columns.append(factor_dict[fname] ** power)
+        
+        elif '*' in term:
+            # Interaction (checked AFTER I() and ** to avoid false positives)
+            factor_names = term.split('*')
+            col = np.ones(n_runs)
+            for fname in factor_names:
+                fname = fname.strip()
+                if fname not in factor_dict:
+                    raise ValueError(f"Unknown factor in term '{term}': {fname}")
+                col *= factor_dict[fname]
+            columns.append(col)
+        
         else:
             # Main effect
+            if term not in factor_dict:
+                raise ValueError(f"Unknown factor: '{term}'")
             columns.append(factor_dict[term])
     
     return np.column_stack(columns)
