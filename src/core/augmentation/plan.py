@@ -13,6 +13,22 @@ import numpy as np
 from abc import ABC, abstractmethod
 
 
+_plan_counter = 0
+
+def create_plan_id() -> str:
+    """
+    Generate unique plan ID.
+    
+    Returns
+    -------
+    str
+        Unique ID (timestamp + counter)
+    """
+    global _plan_counter
+    import time
+    _plan_counter += 1
+    return f"plan_{int(time.time() * 1000)}_{_plan_counter}"
+
 @dataclass
 class FoldoverConfig:
     """
@@ -437,16 +453,3 @@ class AugmentedDesign:
             warnings=warnings,
             metrics=metrics
         )
-
-
-def create_plan_id() -> str:
-    """
-    Generate unique plan ID.
-    
-    Returns
-    -------
-    str
-        Unique ID (timestamp-based)
-    """
-    import time
-    return f"plan_{int(time.time() * 1000)}"
