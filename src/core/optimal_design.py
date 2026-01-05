@@ -48,28 +48,19 @@ def create_polynomial_builder(
     model_type: Literal['linear', 'interaction', 'quadratic'] = 'linear'
 ) -> ModelMatrixBuilder:
     """Create a polynomial model matrix builder."""
-    k = len(factors)
+    from src.core.analysis import generate_model_terms
+    from src.core.diagnostics.variance import build_model_matrix
+    
+    # Generate standard terms for this model type
+    model_terms = generate_model_terms(factors, model_type, include_intercept=True)
     
     def builder(X_points: np.ndarray) -> np.ndarray:
-        n_runs = X_points.shape[0]
-        columns = [np.ones(n_runs)]
+        """Build model matrix from factor settings."""
+        # Convert points array to DataFrame
+        design_df = pd.DataFrame(X_points, columns=[f.name for f in factors])
         
-        # Main effects
-        for j in range(k):
-            columns.append(X_points[:, j])
-        
-        # Two-way interactions
-        if model_type in ('interaction', 'quadratic'):
-            for i in range(k):
-                for j in range(i + 1, k):
-                    columns.append(X_points[:, i] * X_points[:, j])
-        
-        # Pure quadratic terms
-        if model_type == 'quadratic':
-            for j in range(k):
-                columns.append(X_points[:, j] ** 2)
-        
-        return np.column_stack(columns)
+        # Use centralized model matrix builder
+        return build_model_matrix(design_df, factors, model_terms)
     
     return builder
 
@@ -370,25 +361,36 @@ def sherman_morrison_swap(
     """
     Compute det ratio AND updated inverse for swapping x_old -> x_new.
     
-    This avoids recomputing the same Sherman-Morrison updates twice.
-    
     Parameters
     ----------
-    XtX_inv : np.ndarray
-        Current (X'X)^-1
-    x_old : np.ndarray
-        Row being removed
-    x_new : np.ndarray
-        Row being added
+    XtX_inv : np.ndarray, shape (p, p)
+        Current inverse of X'X
+    x_old : np.ndarray, shape (p,)
+        Row being removed (model matrix row)
+    x_new : np.ndarray, shape (p,)
+        Row being added (model matrix row)
     
     Returns
     -------
     ShermanMorrisonResult
         Contains: det_ratio, updated inverse, validity flag
     """
+    # Validate inputs
+    if XtX_inv.ndim != 2 or XtX_inv.shape[0] != XtX_inv.shape[1]:
+        raise ValueError("XtX_inv must be square matrix")
+    
+    p = XtX_inv.shape[0]
+    
+    if x_old.shape != (p,) or x_new.shape != (p,):
+        raise ValueError(
+            f"Vectors must have shape ({p},), got x_old: {x_old.shape}, x_new: {x_new.shape}"
+        )
+    
     # Step 1: Remove x_old contribution
     v_old = XtX_inv @ x_old
     denom_old = 1 - x_old @ v_old
+    
+    # ... rest of implementation
     
     if abs(denom_old) < 1e-14:
         return ShermanMorrisonResult(
@@ -438,6 +440,19 @@ class OptimizerConfig:
     n_random_starts: int = 3
     max_candidates_per_row: int = 50
     use_sherman_morrison: bool = True
+    
+    def __post_init__(self):
+        """Validate configuration."""
+        if self.max_iterations < 1:
+            raise ValueError("max_iterations must be >= 1")
+        if self.relative_improvement_tolerance <= 0:
+            raise ValueError("relative_improvement_tolerance must be > 0")
+        if self.stability_window < 1:
+            raise ValueError("stability_window must be >= 1")
+        if self.n_random_starts < 1:
+            raise ValueError("n_random_starts must be >= 1")
+        if self.max_candidates_per_row < 1:
+            raise ValueError("max_candidates_per_row must be >= 1")
 
 
 def cexch_optimize(
@@ -640,8 +655,8 @@ def code_point(x_actual: np.ndarray, factors: List[Factor]) -> np.ndarray:
     """Convert actual values to coded [-1, 1] scale."""
     x_coded = np.zeros_like(x_actual)
     for i, factor in enumerate(factors):
-        center = (factor.max + factor.min) / 2
-        half_range = (factor.max - factor.min) / 2
+        center = (factor.max_value + factor.min_value) / 2
+        half_range = (factor.max_value - factor.min_value) / 2
         x_coded[i] = (x_actual[i] - center) / half_range
     return x_coded
 
@@ -650,8 +665,8 @@ def decode_point(x_coded: np.ndarray, factors: List[Factor]) -> np.ndarray:
     """Convert coded values to actual scale."""
     x_actual = np.zeros_like(x_coded)
     for i, factor in enumerate(factors):
-        center = (factor.max + factor.min) / 2
-        half_range = (factor.max - factor.min) / 2
+        center = (factor.max_value + factor.min_value) / 2
+        half_range = (factor.max_value - factor.min_value) / 2
         x_actual[i] = center + x_coded[i] * half_range
     return x_actual
 
@@ -699,6 +714,13 @@ def compute_benchmark_determinant(
     
     if model_type == 'linear':
         # Benchmark: Full Factorial 2^k
+        if k > 10:
+            warnings.warn(
+                f"Benchmark computation skipped: 2^{k} = {2**k} runs is too large. "
+                "D-efficiency will be reported as 100%."
+            )
+            return 1.0, f"Full Factorial 2^{k} (not computed)"
+        
         from itertools import product
         ff_coded = np.array(list(product([-1, 1], repeat=k)))
         X_ff = model_builder(ff_coded)

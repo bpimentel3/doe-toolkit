@@ -78,16 +78,15 @@ if st.session_state.get('design') is None:
             try:
                 # Import appropriate design generator
                 if design_type == "Full Factorial":
-                    from src.core.full_factorial import generate_full_factorial
+                    from src.core.full_factorial import full_factorial
                     
-                    design = generate_full_factorial(
+                    design = full_factorial(
                         factors=factors,
-                        n_levels=design_config.get('n_levels', 2),
-                        n_center_points=design_config.get('n_center_points', 0),
-                        n_replicates=design_config.get('n_replicates', 1),
-                        randomize=design_config.get('randomize', True),
-                        seed=seed
-                    )
+                        n_center_points=st.session_state.get('n_center_points', 0),
+                        randomize=st.session_state.get('randomize', True),
+                        random_seed=st.session_state.get('random_seed'),
+                        n_blocks=st.session_state.get('n_blocks')
+    )
                     
                     metadata = {
                         'design_type': 'full_factorial',
@@ -96,105 +95,171 @@ if st.session_state.get('design') is None:
                     }
                 
                 elif design_type == "Fractional Factorial":
-                    from src.core.fractional_factorial import generate_fractional_factorial
+                    from src.core.fractional_factorial import FractionalFactorial
                     
-                    design = generate_fractional_factorial(
+                    fraction = st.session_state.get('fraction', '1/2')
+                    resolution = st.session_state.get('resolution')
+                    generators = st.session_state.get('custom_generators')
+                    
+                    # Create FractionalFactorial object
+                    ff = FractionalFactorial(
                         factors=factors,
-                        fraction=design_config.get('fraction', '1/2'),
-                        resolution=design_config.get('resolution', 5),
-                        n_center_points=design_config.get('n_center_points', 0),
-                        generators=design_config.get('custom_generators'),
-                        randomize=design_config.get('randomize', True),
-                        seed=seed
+                        fraction=fraction,
+                        resolution=resolution,
+                        generators=generators
                     )
                     
-                    metadata = {
-                        'design_type': 'fractional_factorial',
-                        'fraction': design_config.get('fraction'),
-                        'resolution': design_config.get('resolution'),
-                        'generators': design.get('generators'),  # From design result
-                        'is_split_plot': False
+                    # Generate design
+                    design = ff.generate(
+                        randomize=st.session_state.get('randomize', True),
+                        random_seed=st.session_state.get('random_seed'),
+                        n_blocks=st.session_state.get('n_blocks')
+                    )
+                    
+                    # Store metadata
+                    st.session_state['design_metadata'] = {
+                        'fraction': fraction,
+                        'resolution': ff.resolution,
+                        'generators': ff.generators_algebraic,
+                        'defining_relation': ff.defining_relation,
+                        'alias_structure': ff.alias_structure
                     }
                 
                 elif "Response Surface" in design_type:
                     from src.core.response_surface import (
-                        generate_central_composite,
-                        generate_box_behnken
-                    )
+                        CentralCompositeDesign,  
+                        BoxBehnkenDesign          
+    )
                     
-                    if "CCD" in design_type:
-                        design = generate_central_composite(
+                    rsd_variant = st.session_state.get('rsd_variant', 'CCD')
+    
+                    if rsd_variant == 'CCD':
+                        alpha = st.session_state.get('ccd_alpha', 'rotatable')
+                        center_points = st.session_state.get('ccd_center_points', 6)
+                        fraction = st.session_state.get('ccd_fraction')  # For fractional CCD
+                        
+                        # Create CCD object
+                        ccd = CentralCompositeDesign(
                             factors=factors,
-                            alpha=design_config.get('alpha', 1.0),
-                            n_center_points=design_config.get('n_center_points', 5),
-                            randomize=design_config.get('randomize', True),
-                            seed=seed
+                            alpha=alpha,
+                            center_points=center_points,
+                            fraction=fraction
                         )
-                    else:  # Box-Behnken
-                        design = generate_box_behnken(
+                        
+                        # Generate design
+                        design = ccd.generate(
+                            randomize=st.session_state.get('randomize', True),
+                            random_seed=st.session_state.get('random_seed')
+                        )
+                        
+                        # Store metadata
+                        st.session_state['design_metadata'] = {
+                            'variant': 'CCD',
+                            'alpha': ccd.alpha,
+                            'design_type': ccd.design_type,
+                            'n_factorial': ccd.n_factorial,
+                            'n_axial': ccd.n_axial,
+                            'n_center': ccd.n_center
+                        }
+                        
+                    elif rsd_variant == 'Box-Behnken':
+                        center_points = st.session_state.get('bbd_center_points', 3)
+                        
+                        # Create Box-Behnken object
+                        bbd = BoxBehnkenDesign(
                             factors=factors,
-                            n_center_points=design_config.get('n_center_points', 5),
-                            randomize=design_config.get('randomize', True),
-                            seed=seed
+                            center_points=center_points
                         )
-                    
-                    metadata = {
-                        'design_type': 'response_surface',
-                        'is_split_plot': False
-                    }
+                        
+                        # Generate design
+                        design = bbd.generate(
+                            randomize=st.session_state.get('randomize', True),
+                            random_seed=st.session_state.get('random_seed')
+                        )
+                        
+                        # Store metadata
+                        st.session_state['design_metadata'] = {
+                            'variant': 'Box-Behnken',
+                            'n_factorial': bbd.n_factorial,
+                            'n_center': bbd.n_center
+                        }
                 
-                elif design_type == "D-Optimal":
-                    from src.core.optimal_design import generate_optimal_design
-                    from src.core.analysis import generate_model_terms
+                elif "D-Optimal" in design_type:
+                    from src.core.optimal_design import generate_d_optimal_design
+                    from src.core.optimal_design import LinearConstraint  # For constraints
                     
-                    model_type = design_config.get('model_type', 'linear').lower()
-                    model_terms = generate_model_terms(factors, model_type, include_intercept=True)
+                    model_type = st.session_state.get('model_type', 'linear')
+                    n_runs = st.session_state.get('n_runs', 20)
+                    constraints = st.session_state.get('constraints', [])  # List[LinearConstraint]
                     
-                    design = generate_optimal_design(
+                    result = generate_d_optimal_design(
                         factors=factors,
-                        n_runs=design_config.get('n_runs', len(model_terms) * 2),
-                        model_terms=model_terms,
-                        criterion='D',
-                        seed=seed
+                        model_type=model_type,
+                        n_runs=n_runs,
+                        constraints=constraints,
+                        seed=st.session_state.get('random_seed')
                     )
                     
-                    metadata = {
-                        'design_type': 'd_optimal',
-                        'model_terms': model_terms,
-                        'is_split_plot': False
+                    design = result.design_actual
+                    
+                    # Store metadata
+                    st.session_state['design_metadata'] = {
+                        'd_efficiency': result.d_efficiency_vs_benchmark,
+                        'condition_number': result.condition_number,
+                        'n_parameters': result.n_parameters,
+                        'converged_by': result.converged_by
                     }
                 
                 elif design_type == "Latin Hypercube":
                     from src.core.latin_hypercube import generate_latin_hypercube
+    
+                    n_runs = st.session_state.get('n_runs', 20)
+                    criterion = st.session_state.get('lhs_criterion', 'maximin')
+                    n_candidates = st.session_state.get('n_candidates', 10)
                     
-                    design = generate_latin_hypercube(
+                    result = generate_latin_hypercube(
                         factors=factors,
-                        n_runs=design_config.get('n_runs', len(factors) * 10),
-                        criterion=design_config.get('criterion', 'None'),
-                        seed=seed
+                        n_runs=n_runs,
+                        criterion=criterion,
+                        n_candidates=n_candidates,
+                        seed=st.session_state.get('random_seed')
                     )
                     
-                    metadata = {
-                        'design_type': 'latin_hypercube',
-                        'is_split_plot': False
+                    design = result.design
+                    
+                    # Store metadata
+                    st.session_state['design_metadata'] = {
+                        'criterion': result.criterion,
+                        'criterion_value': result.criterion_value,
+                        'n_runs': result.n_runs
                     }
                 
-                elif design_type == "Split-Plot":
+                elif "Split-Plot" in design_type:
                     from src.core.split_plot import generate_split_plot_design
                     
-                    design = generate_split_plot_design(
+                    n_replicates = st.session_state.get('n_replicates', 1)
+                    n_center_points = st.session_state.get('n_center_points', 0)
+                    n_blocks = st.session_state.get('n_blocks', 1)
+                    
+                    result = generate_split_plot_design(
                         factors=factors,
-                        n_whole_plots=design_config.get('n_whole_plots', 4),
-                        subplot_design_type='full_factorial',
-                        randomize_whole_plots=design_config.get('randomize_whole_plots', True),
-                        randomize_subplots=design_config.get('randomize_subplots', True),
-                        seed=seed
+                        n_replicates=n_replicates,
+                        n_center_points=n_center_points,
+                        n_blocks=n_blocks,
+                        randomize_whole_plots=st.session_state.get('randomize', True),
+                        randomize_sub_plots=st.session_state.get('randomize', True),
+                        seed=st.session_state.get('random_seed')
                     )
                     
-                    metadata = {
-                        'design_type': 'split_plot',
-                        'is_split_plot': True,
-                        'has_blocking': 'Block' in design.columns if isinstance(design, pd.DataFrame) else False
+                    design = result.design
+                    
+                    # Store metadata
+                    st.session_state['design_metadata'] = {
+                        'n_whole_plots': result.n_whole_plots,
+                        'n_sub_plots_per_whole_plot': result.n_sub_plots_per_whole_plot,
+                        'whole_plot_factors': result.whole_plot_factors,
+                        'sub_plot_factors': result.sub_plot_factors,
+                        'has_very_hard_factors': result.has_very_hard_factors
                     }
                 
                 else:

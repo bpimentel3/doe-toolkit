@@ -42,6 +42,11 @@ def predict_with_intervals(
     """
     Predict response with confidence and prediction intervals.
     
+    Raises
+    ------
+    AttributeError
+        If model doesn't support get_prediction (e.g., some mixed-effects models)
+
     Parameters
     ----------
     model : statsmodels fitted model
@@ -74,8 +79,15 @@ def predict_with_intervals(
     pred_df = pd.DataFrame([x_pred], columns=factor_names)
     
     # Get prediction with confidence interval
-    pred_result = model.get_prediction(pred_df)
-    pred_summary = pred_result.summary_frame(alpha=alpha)
+    try:
+        pred_result = model.get_prediction(pred_df)
+        pred_summary = pred_result.summary_frame(alpha=alpha)
+    except AttributeError:
+        raise AttributeError(
+            "Model does not support get_prediction(). "
+            "Interval prediction not available for this model type. "
+            "Use model.predict() for point predictions only."
+        )
     
     prediction = pred_summary['mean'].values[0]
     ci_lower = pred_summary['mean_ci_lower'].values[0]
@@ -544,10 +556,15 @@ class DesirabilityFunction:
         
         Notes
         -----
+        **Important**: If ANY individual desirability is 0, the overall
+        desirability is 0. This implements strict constraint behavior:
+        all responses must be at least minimally acceptable.
+        
+        If you want softer tradeoffs, adjust the low/high bounds for
+        each response to allow some tolerance.
+        
         Overall desirability D = (d1^r1 * d2^r2 * ... * dn^rn)^(1/sum(r))
         where di is individual desirability and ri is importance weight.
-        
-        If any individual desirability is 0, overall is 0 (strict constraint).
         """
         individual_desirabilities = []
         importances = []

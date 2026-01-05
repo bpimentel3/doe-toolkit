@@ -323,8 +323,19 @@ def execute_optimal_plan(plan: AugmentationPlan) -> AugmentedDesign:
     if not isinstance(config, OptimalAugmentConfig):
         raise TypeError(f"Expected OptimalAugmentConfig, got {type(config)}")
     
-    # Extract metadata
-    current_model_terms = plan.metadata.get('current_model_terms', [])
+    # Validate required metadata
+    if 'current_model_terms' not in plan.metadata:
+        raise ValueError(
+            "Plan metadata missing 'current_model_terms'. "
+            "Cannot perform model extension without current model specification."
+        )
+    
+    current_model_terms = plan.metadata['current_model_terms']
+    
+    if not current_model_terms:
+        raise ValueError("current_model_terms cannot be empty")
+
+    #####
     
     augmented = augment_for_model_extension(
         original_design=plan.original_design,

@@ -12,6 +12,7 @@ This module handles:
 from typing import List, Dict, Tuple, Optional, Set
 import pandas as pd
 import itertools
+from collections import Counter
 
 from src.core.factors import Factor
 
@@ -257,10 +258,23 @@ class AliasingEngine:
         self.generators = generators
         self.p = len(generators)
         
+        self._validate_generator_independence()
+        
         self.defining_relation = self._build_defining_relation()
         self.resolution = self._calculate_resolution()
         self.alias_structure = self._calculate_alias_structure()
     
+    def _validate_generator_independence(self) -> None:
+        """Check that generators are independent (no duplicate words)."""
+        words = set()
+        for factor, expression in self.generators:
+            word = self._simplify_word(factor + expression)
+            if word in words:
+                raise ValueError(
+                    f"Generators are not independent: duplicate word '{word}'"
+                )
+            words.add(word)
+
     def _build_defining_relation(self) -> List[str]:
         """Build complete defining relation from generators."""
         words = ["I"]
@@ -289,13 +303,11 @@ class AliasingEngine:
     
     def _simplify_word(self, word: str) -> str:
         """Simplify word using mod-2 algebra (A*A=I)."""
-        counts = {}
-        for letter in word:
-            counts[letter] = counts.get(letter, 0) + 1
-        
+        counts = Counter(word)
+    
         # Keep only odd counts, sorted alphabetically
-        result = ''.join(sorted([letter for letter in counts if counts[letter] % 2 == 1]))
-        
+        result = ''.join(sorted(letter for letter, count in counts.items() if count % 2 == 1))
+    
         return result
     
     def _calculate_resolution(self) -> int:
@@ -361,17 +373,17 @@ def parse_generators(generator_strings: List[str]) -> List[Tuple[str, str]]:
     List[Tuple[str, str]]
         List of (factor, expression) tuples
     """
-    parsed = []
+    parsed: List[Tuple[str, str]] = []
     for gen_str in generator_strings:
         if "=" not in gen_str:
             raise ValueError(f"Invalid generator: '{gen_str}'")
         
-        parts = gen_str.split("=")
+        parts: List[str] = gen_str.split("=")
         if len(parts) != 2:
             raise ValueError(f"Invalid generator: '{gen_str}'")
         
-        factor = parts[0].strip()
-        expression = parts[1].strip().replace('*', '')
+        factor: str = parts[0].strip()
+        expression: str = parts[1].strip().replace('*', '')
         
         parsed.append((factor, expression))
     

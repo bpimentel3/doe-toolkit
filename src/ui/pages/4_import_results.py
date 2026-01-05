@@ -270,10 +270,10 @@ else:
                 
                 if factor.is_continuous():
                     # Check range
-                    if col_data.min() < factor.min_value or col_data.max() > factor.max_value:
+                    if col_data.min() < factor.min_value_value or col_data.max() > factor.max_value_value:
                         validation_issues.append(
                             f"⚠️ Factor '{factor.name}': values outside range "
-                            f"[{factor.min_value}, {factor.max_value}]"
+                            f"[{factor.min_value_value}, {factor.max_value_value}]"
                         )
                 
                 elif factor.is_categorical():

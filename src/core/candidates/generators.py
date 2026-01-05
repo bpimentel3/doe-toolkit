@@ -209,38 +209,27 @@ def _exclude_existing_points(
     """
     Exclude candidate points that are too close to existing design points.
     
-    Parameters
-    ----------
-    candidates : np.ndarray
-        Candidate points in coded space
-    existing_design : pd.DataFrame
-        Existing design matrix
-    factors : List[Factor]
-        Factor definitions
-    min_distance : float
-        Minimum Euclidean distance threshold
-    
-    Returns
-    -------
-    np.ndarray
-        Candidates excluding near-duplicates of existing points
+    Uses KDTree for efficient spatial queries: O(n log m) instead of O(n*m).
     """
+    from scipy.spatial import cKDTree
+    
     # Extract existing points in coded space
     factor_names = [f.name for f in factors]
     existing_points = existing_design[factor_names].values
-    
-    # Round for consistency
     existing_points = np.round(existing_points, decimals=6)
     
-    # Find candidates that are far enough from all existing points
+    # Build KDTree for fast nearest-neighbor queries
+    tree = cKDTree(existing_points)
+    
+    # Query tree for each candidate
     keep_mask = np.ones(len(candidates), dtype=bool)
     
     for i, candidate in enumerate(candidates):
-        # Compute distances to all existing points
-        distances = np.linalg.norm(existing_points - candidate, axis=1)
+        # Find distance to nearest existing point
+        distance, _ = tree.query(candidate)
         
-        # If any existing point is too close, exclude this candidate
-        if np.any(distances < min_distance):
+        # Exclude if too close
+        if distance < min_distance:
             keep_mask[i] = False
     
     return candidates[keep_mask]

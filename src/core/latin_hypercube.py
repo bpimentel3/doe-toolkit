@@ -5,12 +5,12 @@ This module provides space-filling designs using Latin Hypercube Sampling (LHS),
 which is particularly useful for initial exploration and computer experiments.
 """
 
+from typing import List, Literal, Optional, Tuple
+from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from scipy.stats.qmc import LatinHypercube
 from scipy.spatial.distance import pdist
-from typing import List, Literal
-from dataclasses import dataclass
 
 from src.core.factors import Factor, FactorType
 
@@ -145,7 +145,7 @@ def generate_latin_hypercube(
             
             for idx, factor in enumerate(continuous_factors):
                 # Scale from [0, 1] to [min, max]
-                scaled = factor.min + lhs_samples[:, idx] * (factor.max - factor.min)
+                scaled = factor.min_value + lhs_samples[:, idx] * (factor.max_value - factor.min_value)
                 
                 if factor.factor_type == FactorType.DISCRETE_NUMERIC:
                     # Round to nearest allowed level
@@ -155,8 +155,8 @@ def generate_latin_hypercube(
                 design_dict[factor.name] = scaled
                 
                 # Coded levels: [-1, 1] scale
-                center = (factor.max + factor.min) / 2
-                half_range = (factor.max - factor.min) / 2
+                center = (factor.max_value + factor.min_value) / 2
+                half_range = (factor.max_value - factor.min_value) / 2
                 coded = (scaled - center) / half_range
                 design_coded_dict[factor.name] = coded
         
@@ -234,81 +234,41 @@ def generate_latin_hypercube(
         criterion_value=best_score
     )
 
-
-def augment_latin_hypercube(
-    existing_design: pd.DataFrame,
+def _generate_candidate_augmentations(
+    existing_clean: pd.DataFrame,
     factors: List[Factor],
     n_additional_runs: int,
-    criterion: Literal['maximin', 'correlation'] = 'maximin',
-    n_candidates: int = 10,
-    seed: int = None
-) -> LHSDesign:
+    n_candidates: int,
+    criterion: str,
+    seed: Optional[int]
+) -> Tuple[pd.DataFrame, pd.DataFrame, float]:
     """
-    Add runs to an existing Latin Hypercube design.
-    
-    This function generates additional runs that maintain good space-filling
-    properties when combined with the existing design.
+    Generate and evaluate candidate augmentations.
     
     Parameters
     ----------
-    existing_design : pd.DataFrame
-        Existing design matrix (without StdOrder/RunOrder columns)
+    existing_clean : pd.DataFrame
+        Existing design without StdOrder/RunOrder
     factors : List[Factor]
-        List of factor definitions (must match existing design)
+        Factor definitions
     n_additional_runs : int
-        Number of new runs to add
-    criterion : {'maximin', 'correlation'}, default='maximin'
-        Selection criterion for new runs
-    n_candidates : int, default=10
-        Number of candidate augmentations to evaluate
+        Number of runs to add
+    n_candidates : int
+        Number of candidates to evaluate
+    criterion : str
+        'maximin' or 'correlation'
     seed : int, optional
-        Random seed for reproducibility
+        Random seed
     
     Returns
     -------
-    LHSDesign
-        Combined design (existing + new runs) with updated run orders
-    
-    Raises
-    ------
-    ValueError
-        If existing design columns don't match factors, or n_additional_runs < 1
-    
-    Notes
-    -----
-    Augmentation works by generating multiple candidate sets of additional runs
-    and selecting the set that produces the best criterion value when combined
-    with the existing design. This maintains the space-filling properties of
-    the overall design.
-    
-    Examples
-    --------
-    >>> # Add 10 more runs to existing design
-    >>> augmented = augment_latin_hypercube(
-    ...     existing_design=initial_design.design,
-    ...     factors=factors,
-    ...     n_additional_runs=10,
-    ...     criterion='maximin'
-    ... )
+    best_additional_design : pd.DataFrame
+        Best new runs (actual levels)
+    best_additional_coded : pd.DataFrame
+        Best new runs (coded levels)
+    best_score : float
+        Score of best augmentation
     """
-    if n_additional_runs < 1:
-        raise ValueError("n_additional_runs must be at least 1")
-    
-    # Remove StdOrder/RunOrder if present
-    existing_clean = existing_design.copy()
-    if 'StdOrder' in existing_clean.columns:
-        existing_clean = existing_clean.drop(columns=['StdOrder', 'RunOrder'])
-    
-    # Validate that factors match existing design
-    factor_names = [f.name for f in factors]
-    if not all(name in existing_clean.columns for name in factor_names):
-        raise ValueError("Factor names must match existing design columns")
-    
-    n_existing = len(existing_clean)
-    total_runs = n_existing + n_additional_runs
-    
-    # Generate candidate augmentations
-    rng = np.random.default_rng(seed)
     best_score = -np.inf
     best_additional_design = None
     best_additional_coded = None
@@ -320,7 +280,7 @@ def augment_latin_hypercube(
             factors=factors,
             n_runs=n_additional_runs,
             criterion=criterion,
-            n_candidates=1,  # Single candidate per augmentation
+            n_candidates=1,
             seed=candidate_seed
         )
         
@@ -328,35 +288,14 @@ def augment_latin_hypercube(
         new_clean = new_design.design.drop(columns=['StdOrder', 'RunOrder'])
         new_coded_clean = new_design.design_coded.drop(columns=['StdOrder', 'RunOrder'])
         
-        # Combine with existing
-        combined = pd.concat([existing_clean, new_clean], ignore_index=True)
-        
-        # Score combined design
-        continuous_factors = [f for f in factors 
-                             if f.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC)]
-        
-        if continuous_factors:
-            numeric_cols = [f.name for f in continuous_factors]
-            # Code existing design for scoring
-            existing_coded = _code_design(existing_clean[numeric_cols], continuous_factors)
-            combined_coded = pd.concat([existing_coded, new_coded_clean[numeric_cols]], ignore_index=True)
-            
-            numeric_data = combined_coded.values
-            
-            if criterion == 'maximin':
-                distances = pdist(numeric_data)
-                score = np.min(distances)
-            elif criterion == 'correlation':
-                if len(continuous_factors) > 1:
-                    corr_matrix = np.corrcoef(numeric_data.T)
-                    upper_triangle = corr_matrix[np.triu_indices_from(corr_matrix, k=1)]
-                    score = -np.max(np.abs(upper_triangle))
-                else:
-                    score = 0.0
-            else:
-                raise ValueError(f"Unknown criterion: {criterion}")
-        else:
-            score = 0.0
+        # Score this augmentation
+        score = _score_augmentation(
+            existing_clean=existing_clean,
+            new_clean=new_clean,
+            new_coded_clean=new_coded_clean,
+            factors=factors,
+            criterion=criterion
+        )
         
         # Track best
         if score > best_score:
@@ -364,7 +303,101 @@ def augment_latin_hypercube(
             best_additional_design = new_clean
             best_additional_coded = new_coded_clean
     
-    # Combine best augmentation with existing
+    return best_additional_design, best_additional_coded, best_score
+
+
+def _score_augmentation(
+    existing_clean: pd.DataFrame,
+    new_clean: pd.DataFrame,
+    new_coded_clean: pd.DataFrame,
+    factors: List[Factor],
+    criterion: str
+) -> float:
+    """
+    Score an augmentation candidate.
+    
+    Parameters
+    ----------
+    existing_clean : pd.DataFrame
+        Existing design (actual levels)
+    new_clean : pd.DataFrame
+        New runs (actual levels)
+    new_coded_clean : pd.DataFrame
+        New runs (coded levels)
+    factors : List[Factor]
+        Factor definitions
+    criterion : str
+        'maximin' or 'correlation'
+    
+    Returns
+    -------
+    float
+        Score (higher is better)
+    """
+    continuous_factors = [f for f in factors 
+                         if f.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC)]
+    
+    if not continuous_factors:
+        return 0.0
+    
+    # Code existing design for scoring
+    numeric_cols = [f.name for f in continuous_factors]
+    existing_coded = _code_design(existing_clean[numeric_cols], continuous_factors)
+    combined_coded = pd.concat([existing_coded, new_coded_clean[numeric_cols]], ignore_index=True)
+    
+    numeric_data = combined_coded.values
+    
+    if criterion == 'maximin':
+        distances = pdist(numeric_data)
+        score = np.min(distances)
+    elif criterion == 'correlation':
+        if len(continuous_factors) > 1:
+            corr_matrix = np.corrcoef(numeric_data.T)
+            upper_triangle = corr_matrix[np.triu_indices_from(corr_matrix, k=1)]
+            score = -np.max(np.abs(upper_triangle))
+        else:
+            score = 0.0
+    else:
+        raise ValueError(f"Unknown criterion: {criterion}")
+    
+    return score
+
+
+def _build_combined_design(
+    existing_clean: pd.DataFrame,
+    best_additional_design: pd.DataFrame,
+    best_additional_coded: pd.DataFrame,
+    factors: List[Factor],
+    total_runs: int,
+    best_score: float,
+    criterion: str
+) -> LHSDesign:
+    """
+    Build final combined design with proper coding.
+    
+    Parameters
+    ----------
+    existing_clean : pd.DataFrame
+        Existing design without StdOrder/RunOrder
+    best_additional_design : pd.DataFrame
+        Best new runs (actual levels)
+    best_additional_coded : pd.DataFrame
+        Best new runs (coded levels)
+    factors : List[Factor]
+        Factor definitions
+    total_runs : int
+        Total number of runs
+    best_score : float
+        Final criterion value
+    criterion : str
+        Criterion used
+    
+    Returns
+    -------
+    LHSDesign
+        Combined design
+    """
+    # Combine designs
     combined_design = pd.concat([existing_clean, best_additional_design], ignore_index=True)
     
     # Code existing design properly for output
@@ -401,6 +434,60 @@ def augment_latin_hypercube(
     )
 
 
+def augment_latin_hypercube(
+    existing_design: pd.DataFrame,
+    factors: List[Factor],
+    n_additional_runs: int,
+    criterion: Literal['maximin', 'correlation'] = 'maximin',
+    n_candidates: int = 10,
+    seed: int = None
+) -> LHSDesign:
+    """
+    Add runs to an existing Latin Hypercube design.
+    
+    This function generates additional runs that maintain good space-filling
+    properties when combined with the existing design.
+    
+    [Keep existing docstring parameters/returns/examples...]
+    """
+    # Validate inputs
+    if n_additional_runs < 1:
+        raise ValueError("n_additional_runs must be at least 1")
+    
+    # Remove StdOrder/RunOrder if present
+    existing_clean = existing_design.copy()
+    if 'StdOrder' in existing_clean.columns:
+        existing_clean = existing_clean.drop(columns=['StdOrder', 'RunOrder'])
+    
+    # Validate that factors match existing design
+    factor_names = [f.name for f in factors]
+    if not all(name in existing_clean.columns for name in factor_names):
+        raise ValueError("Factor names must match existing design columns")
+    
+    n_existing = len(existing_clean)
+    total_runs = n_existing + n_additional_runs
+    
+    # Generate and evaluate candidate augmentations
+    best_additional_design, best_additional_coded, best_score = _generate_candidate_augmentations(
+        existing_clean=existing_clean,
+        factors=factors,
+        n_additional_runs=n_additional_runs,
+        n_candidates=n_candidates,
+        criterion=criterion,
+        seed=seed
+    )
+    
+    # Build final combined design
+    return _build_combined_design(
+        existing_clean=existing_clean,
+        best_additional_design=best_additional_design,
+        best_additional_coded=best_additional_coded,
+        factors=factors,
+        total_runs=total_runs,
+        best_score=best_score,
+        criterion=criterion
+    )
+
 def _code_design(design: pd.DataFrame, factors: List[Factor]) -> pd.DataFrame:
     """
     Convert actual levels to coded [-1, 1] scale.
@@ -419,8 +506,8 @@ def _code_design(design: pd.DataFrame, factors: List[Factor]) -> pd.DataFrame:
     """
     coded_dict = {}
     for factor in factors:
-        center = (factor.max + factor.min) / 2
-        half_range = (factor.max - factor.min) / 2
+        center = (factor.max_value + factor.min_value) / 2
+        half_range = (factor.max_value - factor.min_value) / 2
         coded = (design[factor.name] - center) / half_range
         coded_dict[factor.name] = coded
     

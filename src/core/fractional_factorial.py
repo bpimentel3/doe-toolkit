@@ -139,8 +139,16 @@ class FractionalFactorial:
         # Store generators and build aliasing structure
         self.generators_algebraic = parsed_generators
         self.engine = AliasingEngine(self.k, parsed_generators)
-        self.defining_relation = self.engine.defining_relation
-        self.alias_structure = self.engine.alias_structure
+
+    @property
+    def defining_relation(self) -> List[str]:
+        """Get defining relation from engine."""
+        return self.engine.defining_relation
+    
+    @property
+    def alias_structure(self) -> Dict[str, List[str]]:
+        """Get alias structure from engine."""
+        return self.engine.alias_structure
     
     def _validate_factors(self, factors: List[Factor]) -> None:
         """Validate that all factors are suitable for fractional factorial."""
@@ -156,8 +164,9 @@ class FractionalFactorial:
             
             if factor.is_discrete_numeric() and len(factor.levels) != 2:
                 raise ValueError(
-                    f"Factor '{factor.name}' must have exactly 2 levels, "
-                    f"got {len(factor.levels)}"
+                    f"Factor '{factor.name}' must have exactly 2 levels for fractional factorial, "
+                    f"got {len(factor.levels)}. Fractional factorials require 2-level designs. "
+                    f"For multi-level factors, use full factorial or optimal designs."
                 )
     
     def _parse_fraction(self, fraction: str) -> int:

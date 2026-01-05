@@ -11,6 +11,60 @@ import pandas as pd
 
 from src.core.factors import Factor
 
+def _parse_term_type(term: str) -> Tuple[str, List[str], Optional[int]]:
+    """
+    Parse term into type, factors, and power.
+    
+    Parameters
+    ----------
+    term : str
+        Model term (e.g., '1', 'A', 'A*B', 'I(A**2)', 'A^2')
+    
+    Returns
+    -------
+    term_type : str
+        One of: 'intercept', 'main', 'interaction', 'power'
+    factors : List[str]
+        Factor names involved in the term
+    power : int, optional
+        Power for polynomial terms (None for other types)
+    
+    Examples
+    --------
+    >>> _parse_term_type('1')
+    ('intercept', [], None)
+    >>> _parse_term_type('A')
+    ('main', ['A'], None)
+    >>> _parse_term_type('A*B')
+    ('interaction', ['A', 'B'], None)
+    >>> _parse_term_type('I(A**2)')
+    ('power', ['A'], 2)
+    >>> _parse_term_type('A^2')
+    ('power', ['A'], 2)
+    """
+    if term == '1':
+        return 'intercept', [], None
+    
+    # Check for I(A**2) notation
+    if term.startswith('I(') and '**' in term:
+        # Extract: I(A**2) -> A, 2
+        inner = term[2:-1]  # Remove 'I(' and ')'
+        parts = inner.split('**')
+        return 'power', [parts[0].strip()], int(parts[1].strip())
+    
+    # Check for A^2 or A**2 notation (without I())
+    if '^' in term or '**' in term:
+        sep = '^' if '^' in term else '**'
+        parts = term.split(sep)
+        return 'power', [parts[0].strip()], int(parts[1].strip())
+    
+    # Check for interaction A*B
+    if '*' in term:
+        factors = [f.strip() for f in term.split('*')]
+        return 'interaction', factors, None
+    
+    # Main effect (single factor)
+    return 'main', [term.strip()], None
 
 def build_model_matrix(
     design: pd.DataFrame,
@@ -57,57 +111,35 @@ def build_model_matrix(
     columns = []
     
     for term in model_terms:
-        if term == '1':
-            # Intercept
+        term_type, factors_in_term, power = _parse_term_type(term)
+        
+        if term_type == 'intercept':
             columns.append(np.ones(n_runs))
         
-        elif term.startswith('I(') and '**' in term:
-            # Quadratic with I() notation: I(A**2)
-            # Extract: I(A**2) -> A, 2
-            inner = term[2:-1]  # Remove 'I(' and ')'
-            parts = inner.split('**')
-            fname = parts[0].strip()
-            power = int(parts[1].strip())
-            
+        elif term_type == 'main':
+            fname = factors_in_term[0]
+            if fname not in factor_dict:
+                raise ValueError(f"Unknown factor: '{fname}'")
+            columns.append(factor_dict[fname])
+        
+        elif term_type == 'power':
+            fname = factors_in_term[0]
             if fname not in factor_dict:
                 raise ValueError(f"Unknown factor in term '{term}': {fname}")
-            
             columns.append(factor_dict[fname] ** power)
         
-        elif '^' in term or '**' in term:
-            # Quadratic without I(): A^2 or A**2
-            if '^' in term:
-                parts = term.split('^')
-            else:
-                parts = term.split('**')
-            
-            fname = parts[0].strip()
-            power = int(parts[1].strip())
-            
-            if fname not in factor_dict:
-                raise ValueError(f"Unknown factor in term '{term}': {fname}")
-            
-            columns.append(factor_dict[fname] ** power)
-        
-        elif '*' in term:
-            # Interaction (checked AFTER I() and ** to avoid false positives)
-            factor_names = term.split('*')
+        elif term_type == 'interaction':
             col = np.ones(n_runs)
-            for fname in factor_names:
-                fname = fname.strip()
+            for fname in factors_in_term:
                 if fname not in factor_dict:
                     raise ValueError(f"Unknown factor in term '{term}': {fname}")
                 col *= factor_dict[fname]
             columns.append(col)
         
         else:
-            # Main effect
-            if term not in factor_dict:
-                raise ValueError(f"Unknown factor: '{term}'")
-            columns.append(factor_dict[term])
+            raise ValueError(f"Unknown term type for '{term}'")
     
     return np.column_stack(columns)
-
 
 def compute_prediction_variance(
     design: pd.DataFrame,
