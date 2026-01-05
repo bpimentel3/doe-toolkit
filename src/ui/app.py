@@ -4,6 +4,13 @@ DOE Toolkit - Main Streamlit Application
 A free, open-source Design of Experiments toolkit for engineers.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
 import streamlit as st
 from src.ui.utils.state_management import (
     initialize_session_state,
@@ -38,30 +45,51 @@ with st.sidebar:
     
     progress = get_workflow_progress()
     
-    # Navigation buttons for each step
-    pages = [
-        ("pages/1_define_factors.py", "1. Define Factors"),
-        ("pages/2_choose_design.py", "2. Choose Design"),
-        ("pages/3_preview_design.py", "3. Preview Design"),
-        ("pages/4_import_results.py", "4. Import Results"),
-        ("pages/5_analyze.py", "5. Analyze"),
-        ("pages/6_augmentation.py", "6. Augmentation"),
-        ("pages/7_optimize.py", "7. Optimize")
-    ]
+    # Page navigation using st.page_link
+    # Note: page_link automatically disables inaccessible pages
+    st.page_link("app.py", label="🏠 Home", icon="🏠")
     
-    for i, (page_path, label) in enumerate(pages, start=1):
-        if progress['accessible'][i-1]:
-            if st.button(label, key=f"nav_{i}", use_container_width=True):
-                st.session_state['current_step'] = i
-                st.switch_page(page_path)
-        else:
-            st.button(
-                label, 
-                key=f"nav_{i}", 
-                disabled=True, 
-                use_container_width=True,
-                help="Complete previous steps first"
-            )
+    st.page_link(
+        "pages/1_define_factors.py",
+        label="1. Define Factors",
+        disabled=not progress['accessible'][0]
+    )
+    
+    st.page_link(
+        "pages/2_choose_design.py",
+        label="2. Choose Design",
+        disabled=not progress['accessible'][1]
+    )
+    
+    st.page_link(
+        "pages/3_preview_design.py",
+        label="3. Preview Design",
+        disabled=not progress['accessible'][2]
+    )
+    
+    st.page_link(
+        "pages/4_import_results.py",
+        label="4. Import Results",
+        disabled=not progress['accessible'][3]
+    )
+    
+    st.page_link(
+        "pages/5_analyze.py",
+        label="5. Analyze",
+        disabled=not progress['accessible'][4]
+    )
+    
+    st.page_link(
+        "pages/6_augmentation.py",
+        label="6. Augmentation",
+        disabled=not progress['accessible'][5]
+    )
+    
+    st.page_link(
+        "pages/7_optimize.py",
+        label="7. Optimize",
+        disabled=not progress['accessible'][6]
+    )
     
     st.markdown("---")
     

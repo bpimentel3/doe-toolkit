@@ -3,6 +3,12 @@ Step 4: Import Experimental Results
 
 Import CSV with design + response data, or continue from in-memory design.
 """
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 import streamlit as st
 import pandas as pd
@@ -264,10 +270,10 @@ else:
                 
                 if factor.is_continuous():
                     # Check range
-                    if col_data.min() < factor.min or col_data.max() > factor.max:
+                    if col_data.min() < factor.min_value or col_data.max() > factor.max_value:
                         validation_issues.append(
                             f"⚠️ Factor '{factor.name}': values outside range "
-                            f"[{factor.min}, {factor.max}]"
+                            f"[{factor.min_value}, {factor.max_value}]"
                         )
                 
                 elif factor.is_categorical():

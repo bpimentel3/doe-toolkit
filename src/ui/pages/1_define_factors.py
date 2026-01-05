@@ -3,6 +3,12 @@ Step 1: Define Experimental Factors
 
 Define factors, their types, levels, and changeability.
 """
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 import streamlit as st
 import pandas as pd
