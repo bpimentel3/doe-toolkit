@@ -226,74 +226,34 @@ def _assign_blocks(
     """
     Assign runs to blocks.
     
-    Parameters
-    ----------
-    design : pd.DataFrame
-        Design matrix
-    n_blocks : int
-        Number of blocks
-    randomize_within_blocks : bool
-        Whether runs were randomized (affects block assignment strategy)
-    random_seed : int, optional
-        Random seed
-    
-    Returns
-    -------
-    pd.DataFrame
-        Design matrix with 'Block' column added
+    If randomized: blocks are assigned to preserve mixed run order
+    If not randomized: blocks are interleaved (run 1→block 1, run 2→block 2, ...)
     """
     n_runs = len(design)
     
-    # Calculate runs per block (as evenly as possible)
-    base_runs_per_block = n_runs // n_blocks
-    extra_runs = n_runs % n_blocks
-    
-    # Create block assignments
-    blocks = []
-    for block_num in range(1, n_blocks + 1):
-        # First 'extra_runs' blocks get one extra run
-        runs_in_this_block = base_runs_per_block + (1 if block_num <= extra_runs else 0)
-        blocks.extend([block_num] * runs_in_this_block)
-    
-    # If randomized, blocks are already mixed - just assign sequentially
-    # If not randomized, we want to distribute runs across blocks
-    if not randomize_within_blocks:
-        # Interleave blocks: run 1 -> block 1, run 2 -> block 2, etc.
+    if randomize_within_blocks:
+        # Sequential assignment (runs already mixed by randomization)
+        base_runs_per_block = n_runs // n_blocks
+        extra_runs = n_runs % n_blocks
+        
+        blocks = []
+        for block_num in range(1, n_blocks + 1):
+            runs_in_this_block = base_runs_per_block + (1 if block_num <= extra_runs else 0)
+            blocks.extend([block_num] * runs_in_this_block)
+    else:
+        # Interleaved assignment (systematic distribution)
         blocks = [((i % n_blocks) + 1) for i in range(n_runs)]
     
     design.insert(2, 'Block', blocks)
-    
     return design
 
 
-def decode_design(
-    design: pd.DataFrame,
-    factors: List[Factor]
-) -> pd.DataFrame:
+def decode_design(design: pd.DataFrame, factors: List[Factor]) -> pd.DataFrame:
     """
     Decode a design matrix from coded levels to actual values.
     
-    For continuous factors, converts coded levels (-1, 0, +1) back to actual
-    values specified in factor.levels.
-    
-    Parameters
-    ----------
-    design : pd.DataFrame
-        Design matrix with coded levels
-    factors : List[Factor]
-        List of factors with level definitions
-    
-    Returns
-    -------
-    pd.DataFrame
-        Design matrix with actual (decoded) values
-    
-    Examples
-    --------
-    >>> # Design has Temperature coded as -1, 0, +1
-    >>> # Factor specifies levels=[150, 200]
-    >>> decoded = decode_design(design, [temp_factor])
-    >>> # Temperature now shows 150, 175, 200
+    Handles any coded values (not just -1, 0, 1) using the formula:
+    actual = center + coded * half_range
     """
     decoded = design.copy()
     
@@ -304,16 +264,13 @@ def decode_design(
             factor = factor_dict[col]
             
             if factor.is_continuous():
-                # Decode: -1 -> low, 0 -> middle, +1 -> high
                 low, high = factor.levels
-                middle = (low + high) / 2
+                center = (low + high) / 2
+                half_range = (high - low) / 2
                 
-                # Map coded to actual
-                decoded[col] = decoded[col].map({
-                    -1: low,
-                    0: middle,
-                    1: high
-                })
+                # Formula works for any coded value
+                decoded[col] = center + decoded[col] * half_range
+            
             # Discrete numeric and categorical already have actual values
     
     return decoded

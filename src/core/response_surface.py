@@ -9,6 +9,7 @@ from typing import List, Dict, Optional, Literal
 import pandas as pd
 import numpy as np
 import itertools
+import warnings
 
 from src.core.factors import Factor, FactorType
 
@@ -201,17 +202,25 @@ class CentralCompositeDesign(ResponseSurfaceDesign):
             return self.n_factorial ** 0.25
         
         elif alpha_type == "orthogonal":
-            # Orthogonal: more complex calculation
-            # Simplified formula for full factorial
-            nc = self.n_center
-            nf = self.n_factorial
-            na = self.n_axial
+            # Orthogonal alpha: makes X'X diagonal
+            # Formula: α = [(F + √(F² + 4Fλ)) / 2]^(1/4)
+            # where F = n_factorial, λ = 2k/n_center
             
-            # Alpha for orthogonality (approximate)
-            alpha_squared = (
-                np.sqrt(nf * (np.sqrt(nf + nc) + np.sqrt(na + nc)) / (2 * self.k))
-            )
-            return alpha_squared
+            if self.n_center == 0:
+                warnings.warn(
+                    "Orthogonal design requires center points. "
+                    "Using rotatable alpha instead."
+                )
+                return self.n_factorial ** 0.25
+            
+            F = self.n_factorial
+            lambda_val = (2 * self.k) / self.n_center
+            
+            discriminant = F**2 + 4*F*lambda_val
+            alpha_4th = (F + np.sqrt(discriminant)) / 2
+            alpha = alpha_4th ** 0.25
+            
+            return alpha
         
         elif alpha_type == "face":
             # Face-centered: alpha = 1 (axial points on cube faces)
@@ -242,40 +251,30 @@ class CentralCompositeDesign(ResponseSurfaceDesign):
         """
         if random_seed is not None:
             np.random.seed(random_seed)
-        
-        # Collect non-empty DataFrames to concatenate
-        dfs_to_concat = []
-        point_types = []
-        
-        # 1. Factorial points (2^k or fractional)
+    
+        # Generate all components (guaranteed to return DataFrames)
         factorial_points = self._generate_factorial_points()
-        if len(factorial_points) > 0:
-            dfs_to_concat.append(factorial_points)
-            point_types.extend(['Factorial'] * len(factorial_points))
-        
-        # 2. Axial (star) points
         axial_points = self._generate_axial_points()
-        if len(axial_points) > 0:
-            dfs_to_concat.append(axial_points)
-            point_types.extend(['Axial'] * len(axial_points))
+        center_points = self._generate_center_points() if self.n_center > 0 else pd.DataFrame()
         
-        # 3. Center points
-        if self.n_center > 0:
-            center_points = self._generate_center_points()
-            if len(center_points) > 0:
-                dfs_to_concat.append(center_points)
-                point_types.extend(['Center'] * len(center_points))
+        # Build point type labels
+        point_types = (
+            ['Factorial'] * len(factorial_points) +
+            ['Axial'] * len(axial_points) +
+            ['Center'] * len(center_points)
+        )
         
-        # Combine all points (only if we have DataFrames to concat)
-        if len(dfs_to_concat) == 0:
+        # Combine (pd.concat handles empty DataFrames gracefully)
+        design_matrix = pd.concat(
+            [factorial_points, axial_points, center_points], 
+            ignore_index=True
+        )
+        
+        if len(design_matrix) == 0:
             raise ValueError("No design points generated")
         
-        design_matrix = pd.concat(dfs_to_concat, ignore_index=True)
-        
-        # Add point type identifier
+        # Add metadata
         design_matrix.insert(0, 'PointType', point_types)
-        
-        # Add standard order
         design_matrix.insert(0, 'StdOrder', range(1, len(design_matrix) + 1))
         
         # Randomize if requested

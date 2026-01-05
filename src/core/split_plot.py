@@ -13,7 +13,7 @@ from typing import List, Literal, Optional, Tuple
 from dataclasses import dataclass
 from itertools import product
 
-from factors import Factor, FactorType, ChangeabilityLevel
+from src.core.factors import Factor, FactorType, ChangeabilityLevel
 
 
 @dataclass
@@ -364,8 +364,8 @@ def generate_split_plot_design(
     design_coded = design.copy()
     for factor in factors:
         if factor.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC):
-            center = (factor.max + factor.min) / 2
-            half_range = (factor.max - factor.min) / 2
+            center = (factor.max_value + factor.min_value) / 2
+            half_range = (factor.max_value - factor.min_value) / 2
             design_coded[factor.name] = (design[factor.name] - center) / half_range
     
     return SplitPlotDesign(
@@ -403,7 +403,7 @@ def _generate_factor_combinations(factors: List[Factor]) -> List[dict]:
     for factor in factors:
         if factor.factor_type == FactorType.CONTINUOUS:
             # Use low and high for continuous factors
-            levels = [factor.min, factor.max]
+            levels = [factor.min_value, factor.max_value]
         elif factor.factor_type == FactorType.DISCRETE_NUMERIC:
             levels = factor.levels
         elif factor.factor_type == FactorType.CATEGORICAL:

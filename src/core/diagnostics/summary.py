@@ -148,44 +148,24 @@ def _compute_lof_p_value(
     """
     Compute lack-of-fit p-value if pure error is available.
     
-    Pure error requires either:
-    1. Center point replicates (for continuous factors)
-    2. Full replicates of entire design
+    Returns
+    -------
+    float or None
+        LOF p-value, or None if cannot be computed
     
-    Returns None if pure error cannot be estimated.
+    Notes
+    -----
+    Currently not implemented. Full LOF testing requires:
+    - Partitioning residual SS into pure error and lack-of-fit
+    - Computing appropriate F-statistic
+    - Accounting for design structure (replicate groups)
+    
+    This is complex and requires careful handling of design replicates.
+    For now, this function always returns None.
+    
+    TODO: Implement proper LOF test using residual decomposition.
     """
-    # If residuals do not match number of runs, LOF cannot be computed
-    if len(residuals) != len(design):
-        return None
-
-    # Check for center points (all continuous factors at 0)
-    has_center = False
-    if all(f.is_continuous() for f in factors):
-        factor_cols = [f.name for f in factors]
-        center_mask = (design[factor_cols] == 0).all(axis=1)
-        n_center = center_mask.sum()
-        has_center = n_center >= 2
-    
-    if not has_center:
-        # Check for full replicates
-        # Group by factor settings and count
-        factor_cols = [f.name for f in factors]
-        design_grouped = design[factor_cols].copy()
-        design_grouped['residual'] = residuals
-        
-        # Round to avoid floating point issues
-        for col in factor_cols:
-            design_grouped[col] = design_grouped[col].round(6)
-        
-        replicates = design_grouped.groupby(factor_cols).size()
-        has_replicates = (replicates > 1).any()
-        
-        if not has_replicates:
-            return None
-    
-    # If we get here, pure error is estimable
-    # This is a simplified version - full LOF test requires ANOVA decomposition
-    # For now, return None (LOF testing is complex and may be added later)
+    # Placeholder: LOF testing not yet implemented
     return None
 
 
@@ -194,7 +174,21 @@ def _add_aliasing_diagnostics(
     metadata: Dict,
     factors: List[Factor]
 ) -> None:
-    """Add aliasing diagnostics for fractional factorial designs."""
+    """
+        Add aliasing diagnostics for fractional factorial designs.
+        
+        This function modifies the ResponseDiagnostics object in place,
+        adding resolution, aliased_effects, and confounded_interactions.
+        
+        Parameters
+        ----------
+        diag : ResponseDiagnostics
+            Diagnostic object to modify (mutated in place)
+        metadata : Dict
+            Design metadata containing 'generators'
+        factors : List[Factor]
+            Factor definitions
+        """
     # Import aliasing module (stays in its current location)
     from src.core.aliasing import AliasingEngine
     

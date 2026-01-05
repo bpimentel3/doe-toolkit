@@ -83,10 +83,12 @@ class Factor:
     changeability: ChangeabilityLevel = field(default=ChangeabilityLevel.EASY)
     levels: Optional[List[Union[float, int, str]]] = None
     units: Optional[str] = None
+    _validate_on_init: bool = field(default=True, repr=False, compare=False)
     
     def __post_init__(self):
         """Validate factor definition after initialization."""
-        self.validate()
+        if self._validate_on_init:
+            self.validate()
     
     def validate(self) -> None:
         """
@@ -194,7 +196,7 @@ class Factor:
         return self.factor_type == FactorType.DISCRETE_NUMERIC
     
     @property
-    def min(self) -> Optional[float]:
+    def min_value(self) -> Optional[float]:
         """
         Get minimum value for continuous/discrete numeric factors.
         
@@ -208,7 +210,7 @@ class Factor:
         return None
     
     @property
-    def max(self) -> Optional[float]:
+    def max_value(self) -> Optional[float]:
         """
         Get maximum value for continuous/discrete numeric factors.
         

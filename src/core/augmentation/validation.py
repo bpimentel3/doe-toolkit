@@ -53,6 +53,19 @@ def validate_augmented_design(
     warnings = []
     metrics = {}
     
+    # Check 0: Data integrity
+    factor_names = [f.name for f in factors]
+    if any(f in augmented.combined_design.columns for f in factor_names):
+        factor_data = augmented.combined_design[factor_names]
+        
+        if factor_data.isnull().any().any():
+            null_counts = factor_data.isnull().sum()
+            null_factors = null_counts[null_counts > 0].to_dict()
+            errors.append(
+                f"Design contains NaN values: {null_factors}. "
+                "Check decoding or augmentation logic."
+            )
+            
     # Check 1: Run count
     expected_total = augmented.n_runs_original + augmented.n_runs_added
     actual_total = len(augmented.combined_design)

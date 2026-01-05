@@ -20,8 +20,41 @@ def compute_vif(
 ) -> Dict[str, float]:
     """
     Compute Variance Inflation Factors for model terms.
+    
+    VIF measures multicollinearity by regressing each predictor on all others.
+    VIF = 1/(1-R²) where R² comes from auxiliary regression.
+    
+    Parameters
+    ----------
+    design : pd.DataFrame
+        Design matrix with factor columns
+    factors : List[Factor]
+        Factor definitions
+    model_terms : List[str]
+        Model terms
+    
+    Returns
+    -------
+    Dict[str, float]
+        VIF value for each term (excluding intercept)
+        VIF > 10 indicates problematic collinearity
+    
+    Notes
+    -----
+    The auxiliary regression for each predictor X_j is:
+        X_j ~ X_-j
+    where X_-j contains all other predictors INCLUDING the intercept.
+    
+    The VIF cannot be computed if:
+    - Design is saturated (n ≤ p)
+    - Auxiliary regression is singular
+    
+    Examples
+    --------
+    >>> vif = compute_vif(design, factors, ['1', 'A', 'B', 'A*B'])
+    >>> print(vif['A*B'])
+    2.5
     """
-
     from src.core.diagnostics.variance import build_model_matrix
 
     # Build full model matrix INCLUDING intercept
@@ -48,43 +81,43 @@ def compute_vif(
     vif_values = {}
 
     for term, col_idx in zip(terms_no_intercept, col_indices):
-        # Predictor column
+        # Predictor column to explain
         X_j = X[:, col_idx].reshape(-1, 1)
 
-
-        # All other predictors (keep intercept in X)
+        # All other predictors (includes intercept if it was in model_terms)
         X_not_j = np.delete(X, col_idx, axis=1)
 
-        # Add intercept to auxiliary regression
-        X_not_j = np.column_stack([np.ones(n), X_not_j])
-
         try:
-            XtX = X_not_j.T @ X_not_j
-            Xty = X_not_j.T @ X_j
-
-            ridge = 1e-6
-            beta, *_ = np.linalg.lstsq(X_not_j, X_j, rcond=None)
-
-
-
+            # Regress X_j on all other columns using least squares
+            # Note: X_not_j already includes intercept (first column of X)
+            beta, residuals, rank, s = np.linalg.lstsq(X_not_j, X_j, rcond=None)
+            
+            # Calculate R² from auxiliary regression
             y_pred = X_not_j @ beta
-            ss_res = np.sum((X_j - y_pred) ** 2)
-            ss_tot = np.sum((X_j - np.mean(X_j)) ** 2)
+            ss_res = np.sum((X_j.flatten() - y_pred.flatten()) ** 2)
+            ss_tot = np.sum((X_j.flatten() - np.mean(X_j)) ** 2)
 
-            r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-
-            if r_squared < 0.9999:
-                vif = 1.0 / (1.0 - r_squared)
+            if ss_tot > 0:
+                r_squared = 1 - ss_res / ss_tot
             else:
+                r_squared = 0
+            
+            # VIF = 1 / (1 - R²)
+            # If R² ≈ 1, VIF → ∞ (perfect collinearity)
+            if r_squared >= 0.9999:
                 vif = np.inf
+            elif r_squared < 0:  # Can happen with poor fit
+                vif = 1.0
+            else:
+                vif = 1.0 / (1.0 - r_squared)
 
             vif_values[term] = float(vif)
 
         except (np.linalg.LinAlgError, ValueError):
+            # Singular matrix or other numerical issue
             vif_values[term] = np.inf
 
     return vif_values
-
 
 def check_collinearity(
     vif_values: Dict[str, float],

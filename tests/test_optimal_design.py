@@ -105,8 +105,8 @@ class TestBasicDOptimalDesign:
         
         # Actual values in factor bounds
         for i, factor in enumerate(simple_factors):
-            assert np.all(result.design_actual[factor.name] >= factor.min - 1e-6)
-            assert np.all(result.design_actual[factor.name] <= factor.max + 1e-6)
+            assert np.all(result.design_actual[factor.name] >= factor.min_value - 1e-6)
+            assert np.all(result.design_actual[factor.name] <= factor.max_value + 1e-6)
     
     def test_interaction_model(self, simple_factors):
         """Generate interaction model design."""

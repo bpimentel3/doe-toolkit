@@ -28,11 +28,24 @@ def generate_model_terms(
     """
     Generate standard model terms using Python/patsy notation.
     
+    Raises
+    ------
+    ValueError
+        If model_type='quadratic' but no continuous factors present
+    
     Examples
     --------
     >>> generate_model_terms(factors, 'quadratic')
     ['1', 'A', 'B', 'A*B', 'I(A**2)', 'I(B**2)']
     """
+    # Validate quadratic requirement
+    if model_type == 'quadratic':
+        if not any(f.is_continuous() for f in factors):
+            raise ValueError(
+                "Quadratic model requires at least one continuous factor. "
+                "Use 'interaction' model for categorical factors only."
+            )
+        
     terms = []
     
     if include_intercept:
@@ -80,6 +93,8 @@ def enforce_hierarchy(
     """Enforce model hierarchy and proper term ordering."""
     complete_terms = terms.copy()
     added_terms = []
+    complete_terms_set = set(terms)  # O(1) lookup
+    factor_names_set = set(factor_names)
     
     for term in terms:
         if term == '1':
@@ -89,9 +104,10 @@ def enforce_hierarchy(
         
         if operator in ('*', '**'):
             for factor_name in factor_list:
-                if factor_name not in complete_terms and factor_name in factor_names:
+                if factor_name not in complete_terms_set and factor_name in factor_names_set:
                     complete_terms.append(factor_name)
                     added_terms.append(factor_name)
+                    complete_terms_set.add(factor_name)  # Keep set in sync
     
     # Remove duplicates
     seen = set()
@@ -102,24 +118,28 @@ def enforce_hierarchy(
     if '1' in unique_terms:
         ordered.append('1')
     
+    # Main effects
     for term in unique_terms:
         if term != '1':
             factor_list, op = parse_model_term(term)
             if op == '' and len(factor_list) == 1:
                 ordered.append(term)
     
+    # Two-way interactions
     for term in unique_terms:
         if term != '1':
             factor_list, op = parse_model_term(term)
             if op == '*' and len(factor_list) == 2:
                 ordered.append(term)
     
+    # Quadratic terms
     for term in unique_terms:
         if term != '1':
             factor_list, op = parse_model_term(term)
             if op == '**':
                 ordered.append(term)
     
+    # Any remaining terms (shouldn't normally happen)
     for term in unique_terms:
         if term not in ordered:
             ordered.append(term)
@@ -378,16 +398,22 @@ class ANOVAAnalysis:
         df_error = n_runs - n_params
         
         if df_error < 0:
-            warnings.warn(f"Oversaturated: {n_runs} runs, {n_params} params, df={df_error}")
+            raise ValueError(
+                f"Model is oversaturated: {n_runs} runs for {n_params} parameters "
+                f"(df_error = {df_error}). Reduce model complexity or add more runs."
+            )
         elif df_error == 0:
-            warnings.warn(f"Saturated: df=0, no error estimate possible")
+            warnings.warn(
+                f"Model is saturated (df_error = 0): No degrees of freedom for error estimation. "
+                f"Statistical tests will not be valid. Consider adding runs or simplifying model."
+            )
         elif df_error < 3:
-            warnings.warn(f"Low df={df_error}, unreliable inference")
-        
-        if self.design_structure['is_split_plot']:
-            n_wp = self.data[self.design_structure['whole_plot_column']].nunique()
-            if n_wp < 3:
-                warnings.warn(f"Only {n_wp} whole-plots, need ≥3")
+            warnings.warn(f"Low df_error = {df_error}: Inference may be unreliable")
+            
+            if self.design_structure['is_split_plot']:
+                n_wp = self.data[self.design_structure['whole_plot_column']].nunique()
+                if n_wp < 3:
+                    warnings.warn(f"Only {n_wp} whole-plots, need ≥3")
     
     def update_model(
         self,
