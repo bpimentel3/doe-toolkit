@@ -1,7 +1,8 @@
 """
-Step 1: Define Experimental Factors
+Step 1: Define Experimental Factors (With Name Sanitization)
 
 Define factors, their types, levels, and changeability.
+Includes real-time factor name validation and sanitization.
 """
 import sys
 from pathlib import Path
@@ -17,7 +18,14 @@ from src.ui.utils.state_management import (
     initialize_session_state,
     invalidate_downstream_state
 )
-from src.core.factors import Factor, FactorType, ChangeabilityLevel
+from src.core.factors import (
+    Factor, 
+    FactorType, 
+    ChangeabilityLevel,
+    sanitize_factor_name,
+    validate_factor_name,
+    get_sanitization_report
+)
 
 # Initialize state
 initialize_session_state()
@@ -125,13 +133,80 @@ if st.session_state.get('add_factor_mode') or st.session_state.get('edit_factor_
         existing_factor = None
     
     with st.form("factor_form"):
-        # Factor name
-        factor_name = st.text_input(
+        # Get existing factor names for duplicate checking
+        existing_names = {f.name for f in factors}
+        if existing_factor:
+            # Exclude self when editing
+            existing_names.discard(existing_factor.name)
+        
+        # Factor name with real-time validation
+        st.markdown("### Factor Name")
+        
+        factor_name_input = st.text_input(
             "Factor Name*",
             value=existing_factor.name if existing_factor else "",
-            placeholder="e.g., Temperature, Pressure, Material",
-            help="Use a descriptive, unique name"
+            placeholder="e.g., Temperature, Pressure, Material_Type",
+            help="Use letters, numbers, and underscores. Special characters will be removed.",
+            key='factor_name_input'
         )
+        
+        # Real-time validation and sanitization feedback
+        final_factor_name = None
+        name_is_valid = False
+        
+        if factor_name_input:
+            # Sanitize the name
+            sanitized, was_modified = sanitize_factor_name(factor_name_input)
+            
+            # Check for duplicates (case-insensitive)
+            is_duplicate = sanitized.lower() in {n.lower() for n in existing_names}
+            
+            if is_duplicate:
+                st.error(
+                    f"❌ **Duplicate factor name**\n\n"
+                    f"A factor named '{sanitized}' already exists. "
+                    f"Please choose a different name."
+                )
+                name_is_valid = False
+            
+            elif was_modified:
+                # Name will be sanitized
+                st.warning(
+                    f"⚠️ **Factor name will be modified**\n\n"
+                    f"**Your input:** `{factor_name_input}`\n\n"
+                    f"**Will be saved as:** `{sanitized}`"
+                )
+                
+                # Show detailed changes
+                report = get_sanitization_report(factor_name_input)
+                if report['changes']:
+                    with st.expander("🔍 Why was it changed?"):
+                        st.markdown("**Changes applied:**")
+                        for change in report['changes']:
+                            st.caption(f"• {change}")
+                        
+                        st.markdown("---")
+                        st.markdown("**Why sanitization is needed:**")
+                        st.caption(
+                            "Factor names are used in statistical formulas. "
+                            "Special characters like `*`, `+`, `()` have special "
+                            "meaning in formulas and would cause errors. "
+                            "Only letters, numbers, and underscores are allowed."
+                        )
+                
+                st.success(f"✓ Sanitized name is valid")
+                final_factor_name = sanitized
+                name_is_valid = True
+            
+            else:
+                # Name is perfect as-is
+                st.success(f"✓ Factor name is valid: `{factor_name_input}`")
+                final_factor_name = factor_name_input
+                name_is_valid = True
+        else:
+            st.info("💡 Enter a factor name to continue")
+        
+        st.markdown("---")
         
         # Factor type
         factor_type = st.selectbox(
@@ -255,8 +330,11 @@ if st.session_state.get('add_factor_mode') or st.session_state.get('edit_factor_
             # Validate
             errors = []
             
-            if not factor_name or not factor_name.strip():
+            if not factor_name_input or not factor_name_input.strip():
                 errors.append("Factor name is required")
+            
+            if not name_is_valid:
+                errors.append("Factor name is invalid or duplicate")
             
             if not levels:
                 errors.append("At least one level is required")
@@ -269,25 +347,14 @@ if st.session_state.get('add_factor_mode') or st.session_state.get('edit_factor_
                 if len(levels) < 2:
                     errors.append("At least 2 levels required")
             
-            # Check for duplicate name (if adding or renaming)
-            if existing_factor:
-                # Editing - check duplicates excluding self
-                other_names = [f.name for i, f in enumerate(factors) if i != edit_idx]
-            else:
-                # Adding - check all names
-                other_names = [f.name for f in factors]
-            
-            if factor_name in other_names:
-                errors.append(f"Factor name '{factor_name}' already exists")
-            
             if errors:
                 for error in errors:
                     st.error(error)
             else:
-                # Create/update factor
+                # Create/update factor using sanitized name
                 try:
                     new_factor = Factor(
-                        name=factor_name.strip(),
+                        name=final_factor_name,  # Use sanitized name
                         factor_type=factor_type,
                         changeability=changeability,
                         levels=levels,
@@ -297,11 +364,11 @@ if st.session_state.get('add_factor_mode') or st.session_state.get('edit_factor_
                     if existing_factor:
                         # Update existing
                         st.session_state['factors'][edit_idx] = new_factor
-                        st.success(f"✓ Factor '{factor_name}' updated")
+                        st.success(f"✓ Factor '{final_factor_name}' updated")
                     else:
                         # Add new
                         st.session_state['factors'].append(new_factor)
-                        st.success(f"✓ Factor '{factor_name}' added")
+                        st.success(f"✓ Factor '{final_factor_name}' added")
                     
                     # Clear modes
                     st.session_state['add_factor_mode'] = False
@@ -348,6 +415,31 @@ with col1:
         - **Easy**: Most factors - can be changed every run
         - **Hard**: Defines whole-plots (e.g., oven temperature if multiple batches per oven setting)
         - **Very Hard**: Rare - defines whole-whole-plots (nested structure)
+        
+        **Factor Names:**
+        - Use letters, numbers, and underscores only
+        - Avoid special characters: `*`, `+`, `-`, `()`, `/`, etc.
+        - Names starting with digits will get an `F_` prefix
+        - Python keywords (for, if, class) will get a `_var` suffix
+        - Special names (I, C, Q, T) are reserved and will be modified
+        """)
+    
+    with st.expander("⚠️ Common Naming Mistakes"):
+        st.markdown("""
+        **What NOT to do:**
+        - ❌ `Temperature (°C)` → Use `Temperature_C` or `Temperature`
+        - ❌ `A*B` → Use `A_x_B` or `Factor_AB`
+        - ❌ `Speed+Time` → Use `Speed_Time` or `SpeedTime`
+        - ❌ `1st Factor` → Use `Factor_1st` or `First_Factor`
+        - ❌ `for` → Use `for_time` or `duration`
+        - ❌ `I()` → Use `I_value` or similar
+        
+        **Why?**
+        These characters have special meaning in statistical formulas:
+        - `*` means interaction (A*B = interaction of A and B)
+        - `+` adds terms to a model
+        - `()` groups terms
+        - Numbers at the start aren't valid Python identifiers
         """)
 
 with col2:

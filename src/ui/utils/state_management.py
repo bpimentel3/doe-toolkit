@@ -439,9 +439,22 @@ def create_project_file() -> str:
     return json.dumps(project, indent=2)
 
 
+"""
+Session State Management with Factor Name Sanitization.
+
+This is the updated load_project_file function from state_management.py
+that handles legacy factor names.
+
+INSTRUCTIONS: Replace the load_project_file function in 
+src/ui/utils/state_management.py with this version.
+"""
+
 def load_project_file(file_content: str) -> None:
     """
-    Load project from JSON file content.
+    Load project from JSON file content with factor name sanitization.
+    
+    This function handles legacy projects that may have factor names with
+    special characters that are no longer allowed.
     
     Parameters
     ----------
@@ -451,27 +464,75 @@ def load_project_file(file_content: str) -> None:
     import json
     import pandas as pd
     import numpy as np
-    from src.core.factors import Factor, FactorType, ChangeabilityLevel
+    from src.core.factors import (
+        Factor, 
+        FactorType, 
+        ChangeabilityLevel,
+        sanitize_factor_name
+    )
     
-    project = json.loads(file_content)
+    try:
+        project = json.loads(file_content)
+    except json.JSONDecodeError as e:
+        st.error(f"Invalid project file: {e}")
+        return
     
     # Validate version (simple check)
     if 'version' not in project:
-        raise ValueError("Invalid project file: missing version")
+        st.warning("Project file missing version. Attempting to load anyway...")
     
-    # Restore factors
+    # Restore factors with sanitization
     factors = []
+    renamed_factors = []
+    
     for f_data in project.get('factors', []):
-        factor = Factor(
-            name=f_data['name'],
-            factor_type=FactorType(f_data['type']),
-            changeability=ChangeabilityLevel(f_data['changeability']),
-            levels=f_data['levels'],
-            units=f_data.get('units')
-        )
-        factors.append(factor)
+        original_name = f_data['name']
+        
+        # Sanitize the name
+        clean_name, was_modified = sanitize_factor_name(original_name)
+        
+        # Track renames for user notification
+        if was_modified:
+            renamed_factors.append({
+                'original': original_name,
+                'sanitized': clean_name
+            })
+        
+        try:
+            factor = Factor(
+                name=clean_name,  # Use sanitized name
+                factor_type=FactorType(f_data['type']),
+                changeability=ChangeabilityLevel(f_data['changeability']),
+                levels=f_data['levels'],
+                units=f_data.get('units')
+            )
+            factors.append(factor)
+        except Exception as e:
+            st.error(f"Failed to load factor '{original_name}': {e}")
+            continue
+    
+    if not factors:
+        st.error("No valid factors found in project file")
+        return
     
     st.session_state['factors'] = factors
+    
+    # Show sanitization warnings if any
+    if renamed_factors:
+        st.warning(
+            "⚠️ **Factor names were updated for compatibility**\n\n"
+            "The following factor names contained special characters and were sanitized:"
+        )
+        
+        rename_df = pd.DataFrame(renamed_factors)
+        rename_df.columns = ['Original Name', 'Sanitized Name']
+        st.dataframe(rename_df, use_container_width=True)
+        
+        st.info(
+            "💡 **Why?** Special characters like `*`, `+`, `()` are not allowed in "
+            "factor names because they have special meaning in statistical formulas. "
+            "Your project has been updated to use safe names."
+        )
     
     # Restore design settings
     st.session_state['design_type'] = project.get('design_type')
@@ -479,8 +540,28 @@ def load_project_file(file_content: str) -> None:
     st.session_state['design_metadata'] = project.get('design_metadata', {})
     
     # Restore design if exists
+    # Note: Design column names should match sanitized factor names
     if 'design' in project:
-        st.session_state['design'] = pd.DataFrame(project['design'])
+        design_df = pd.DataFrame(project['design'])
+        
+        # Check if design columns need renaming to match sanitized factor names
+        if renamed_factors:
+            rename_map = {r['original']: r['sanitized'] for r in renamed_factors}
+            
+            # Rename columns if they exist in the design
+            cols_to_rename = {
+                old: new for old, new in rename_map.items() 
+                if old in design_df.columns
+            }
+            
+            if cols_to_rename:
+                design_df = design_df.rename(columns=cols_to_rename)
+                st.info(
+                    f"✓ Updated {len(cols_to_rename)} column(s) in design to match "
+                    "sanitized factor names"
+                )
+        
+        st.session_state['design'] = design_df
     
     # Restore responses if exist
     if 'responses' in project:
@@ -490,18 +571,129 @@ def load_project_file(file_content: str) -> None:
         st.session_state['responses'] = responses
         st.session_state['response_names'] = project.get('response_names', [])
     
-    # Restore model terms
+    # Restore model terms (need to update if factor names changed)
     if 'model_terms_per_response' in project:
-        st.session_state['model_terms_per_response'] = project['model_terms_per_response']
+        model_terms = project['model_terms_per_response']
+        
+        # Update model terms if factor names changed
+        if renamed_factors:
+            rename_map = {r['original']: r['sanitized'] for r in renamed_factors}
+            
+            updated_model_terms = {}
+            for response_name, terms in model_terms.items():
+                updated_terms = []
+                for term in terms:
+                    # Replace factor names in terms
+                    updated_term = term
+                    for old_name, new_name in rename_map.items():
+                        # Handle different term formats
+                        # Main effect: "OldName" -> "NewName"
+                        if updated_term == old_name:
+                            updated_term = new_name
+                        # Interaction: "A*OldName" -> "A*NewName"
+                        updated_term = updated_term.replace(f"*{old_name}", f"*{new_name}")
+                        updated_term = updated_term.replace(f"{old_name}*", f"{new_name}*")
+                        # Quadratic: "I(OldName**2)" -> "I(NewName**2)"
+                        updated_term = updated_term.replace(f"I({old_name}**", f"I({new_name}**")
+                    
+                    updated_terms.append(updated_term)
+                
+                updated_model_terms[response_name] = updated_terms
+            
+            st.session_state['model_terms_per_response'] = updated_model_terms
+            
+            st.info(
+                "✓ Updated model terms to use sanitized factor names"
+            )
+        else:
+            st.session_state['model_terms_per_response'] = model_terms
     
     # Set current step based on what's loaded
     if st.session_state.get('responses'):
         st.session_state['current_step'] = 5  # Go to analysis
+        st.success(
+            f"✓ Project loaded successfully!\n\n"
+            f"- {len(factors)} factor(s)\n"
+            f"- {len(st.session_state.get('responses', {}))} response(s)\n"
+            f"- Navigating to analysis..."
+        )
     elif st.session_state.get('design') is not None:
         st.session_state['current_step'] = 4  # Go to import
+        st.success(
+            f"✓ Project loaded successfully!\n\n"
+            f"- {len(factors)} factor(s)\n"
+            f"- Design with {len(st.session_state['design'])} runs\n"
+            f"- Navigating to data import..."
+        )
     elif st.session_state.get('design_type'):
         st.session_state['current_step'] = 3  # Go to preview
+        st.success(
+            f"✓ Project loaded successfully!\n\n"
+            f"- {len(factors)} factor(s)\n"
+            f"- Design type: {st.session_state['design_type']}\n"
+            f"- Navigating to design preview..."
+        )
     elif factors:
         st.session_state['current_step'] = 2  # Go to design selection
+        st.success(
+            f"✓ Project loaded successfully!\n\n"
+            f"- {len(factors)} factor(s) defined\n"
+            f"- Navigating to design selection..."
+        )
     else:
         st.session_state['current_step'] = 1  # Start at factors
+        st.success("✓ Project loaded successfully!")
+
+
+# Additional helper function for CSV imports
+def sanitize_design_columns(design: pd.DataFrame, factors: list) -> pd.DataFrame:
+    """
+    Sanitize column names in imported design to match factor names.
+    
+    Use this when importing CSV files that might have unsanitized column names.
+    
+    Parameters
+    ----------
+    design : pd.DataFrame
+        Design with potentially unsafe column names
+    factors : List[Factor]
+        Factors with sanitized names
+    
+    Returns
+    -------
+    pd.DataFrame
+        Design with sanitized column names
+    
+    Examples
+    --------
+    >>> # In 4_import_results.py after loading CSV
+    >>> design = sanitize_design_columns(uploaded_df, factors)
+    """
+    from src.core.factors import sanitize_factor_name
+    
+    # Build mapping from potential unsafe names to safe names
+    factor_map = {}
+    for factor in factors:
+        # The factor already has a safe name, but the CSV might have the original
+        # We need to handle both the case where CSV has safe names and unsafe names
+        
+        # Create reverse mapping: try common variations
+        safe_name = factor.name
+        
+        # For now, just ensure all factor names in design match
+        # This is a simplified version - you might need more sophisticated matching
+        if safe_name not in design.columns:
+            # Try to find a column that might sanitize to this name
+            for col in design.columns:
+                sanitized_col, _ = sanitize_factor_name(col)
+                if sanitized_col == safe_name:
+                    factor_map[col] = safe_name
+                    break
+    
+    if factor_map:
+        design = design.rename(columns=factor_map)
+        st.info(
+            f"✓ Sanitized {len(factor_map)} column name(s) to match factor definitions"
+        )
+    
+    return design

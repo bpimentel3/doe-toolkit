@@ -173,6 +173,14 @@ with st.spinner(f"Fitting model for {selected_response}..."):
             enforce_hierarchy_flag=enforce_hierarchy
         )
         
+        # Warn if factor names were sanitized
+        if getattr(analysis, "rename_map", {}):
+            renamed = ", ".join([f"{old} → {new}" for old, new in analysis.rename_map.items()])
+            st.warning(
+                f"Some factor names were automatically renamed for compatibility: {renamed}. "
+                "This prevents errors in the statistical model formula."
+            )
+
         # Save to state
         if 'fitted_models' not in st.session_state:
             st.session_state['fitted_models'] = {}
