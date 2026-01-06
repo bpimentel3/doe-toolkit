@@ -127,14 +127,14 @@ if optimization_mode == 'single':
                 with col1:
                     min_val = st.number_input(
                         f"{factor.name} Min",
-                        value=float(factor.min_value_value),
+                        value=float(factor.min_value),
                         key=f'min_{factor.name}'
                     )
                 
                 with col2:
                     max_val = st.number_input(
                         f"{factor.name} Max",
-                        value=float(factor.max_value_value),
+                        value=float(factor.max_value),
                         key=f'max_{factor.name}'
                     )
                 
@@ -156,7 +156,7 @@ if optimization_mode == 'single':
                     
                     for factor in factors:
                         if factor.is_continuous():
-                            min_c, max_c = factor_constraints.get(factor.name, (factor.min_value_value, factor.max_value_value))
+                            min_c, max_c = factor_constraints.get(factor.name, (factor.min_value, factor.max_value))
                             factor_values[factor.name] = np.linspace(min_c, max_c, n_points)
                     
                     # Create grid (simplified for 2 factors)
@@ -249,7 +249,7 @@ if optimization_mode == 'single':
                         for factor in factors:
                             if factor.name not in [x_factor, y_factor]:
                                 if factor.is_continuous():
-                                    grid_design[factor.name] = (factor.min_value_value + factor.max_value_value) / 2
+                                    grid_design[factor.name] = (factor.min_value + factor.max_value) / 2
                                 else:
                                     grid_design[factor.name] = factor.levels[0]
                         
@@ -313,7 +313,7 @@ if optimization_mode == 'single':
                         for factor in factors:
                             if factor.name not in [x_factor, y_factor]:
                                 if factor.is_continuous():
-                                    grid_design[factor.name] = (factor.min_value_value + factor.max_value_value) / 2
+                                    grid_design[factor.name] = (factor.min_value + factor.max_value) / 2
                         
                         results = fitted_models[primary_response]
                         Z_pred = results.fitted_model.predict(grid_design).reshape(X.shape)

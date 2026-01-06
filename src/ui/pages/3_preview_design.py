@@ -82,7 +82,7 @@ if st.session_state.get('design') is None:
                     
                     design = full_factorial(
                         factors=factors,
-                        n_center_points=st.session_state.get('n_center_points', 0),
+                        n_center_points = design_config.get('n_center_points', 0),
                         randomize=st.session_state.get('randomize', True),
                         random_seed=st.session_state.get('random_seed'),
                         n_blocks=st.session_state.get('n_blocks')
@@ -135,7 +135,7 @@ if st.session_state.get('design') is None:
     
                     if rsd_variant == 'CCD':
                         alpha = st.session_state.get('ccd_alpha', 'rotatable')
-                        center_points = st.session_state.get('ccd_center_points', 6)
+                        center_points = design_config.get('n_center_points', 6)
                         fraction = st.session_state.get('ccd_fraction')  # For fractional CCD
                         
                         # Create CCD object
@@ -163,7 +163,7 @@ if st.session_state.get('design') is None:
                         }
                         
                     elif rsd_variant == 'Box-Behnken':
-                        center_points = st.session_state.get('bbd_center_points', 3)
+                        center_points = design_config.get('n_center_points', 3)
                         
                         # Create Box-Behnken object
                         bbd = BoxBehnkenDesign(
@@ -238,7 +238,7 @@ if st.session_state.get('design') is None:
                     from src.core.split_plot import generate_split_plot_design
                     
                     n_replicates = st.session_state.get('n_replicates', 1)
-                    n_center_points = st.session_state.get('n_center_points', 0)
+                    n_center_points = design_config.get('n_center_points', 0)
                     n_blocks = st.session_state.get('n_blocks', 1)
                     
                     result = generate_split_plot_design(

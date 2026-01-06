@@ -174,11 +174,27 @@ def prepare_analysis_data(
     response_name: str = "Response"
 ) -> pd.DataFrame:
     """Prepare data for analysis."""
+
+    # Debug: sanity check types
+    print("DEBUG[prepare_analysis_data]: design type =", type(design))
+    print("DEBUG[prepare_analysis_data]: response type =", type(response))
+
     if len(response) != len(design):
         raise ValueError(f"Response length mismatch: {len(response)} != {len(design)}")
     
     factor_names = [f.name for f in factors]
-    analysis_df = design[factor_names].copy()
+    print("DEBUG[prepare_analysis_data]: factor_names =", factor_names)
+    print("DEBUG[prepare_analysis_data]: design.columns =", list(design.columns))
+
+    try:
+        # This is where pandas might be throwing the ValueError
+        analysis_df = design[factor_names].copy()
+    except Exception as e:
+        print("DEBUG[prepare_analysis_data]: error type =", type(e))
+        print("DEBUG[prepare_analysis_data]: error message =", e)
+        # Re-raise so we still see the traceback in Streamlit
+        raise
+
     analysis_df[response_name] = response
     
     for col in ['Block', 'WholePlot', 'VeryHardPlot', 'Replicate', 'RunOrder', 'StdOrder']:
@@ -186,6 +202,7 @@ def prepare_analysis_data(
             analysis_df[col] = design[col]
     
     return analysis_df
+
 
 
 def validate_model_terms(terms: List[str], factors: List[Factor], design: pd.DataFrame) -> None:
@@ -247,7 +264,12 @@ class ANOVAAnalysis:
         self.response_name = response_name
         self.block_as_random = block_as_random
         
-        self.data = prepare_analysis_data(design, response, factors, response_name)
+        self.data = prepare_analysis_data(
+            design, response, factors, response_name
+        )
+        self.rename_map = {}
+
+
         self.design_structure = detect_split_plot_structure(design, factors)
         
         if is_split_plot is not None:
