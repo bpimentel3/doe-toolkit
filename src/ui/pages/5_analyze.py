@@ -43,52 +43,75 @@ PLOT_COLORS = {
     'neutral': '#7f7f7f',
     'purple': '#9467bd',
     'brown': '#8c564b',
-    'pink': '#e377c2'
+    'pink': '#e377c2',
+    'sigma1': '#90EE90',  # Light green for 1σ
+    'sigma2': '#FFD700',  # Gold for 2σ
+    'sigma3': '#FF6347'   # Tomato red for 3σ
 }
 
 def apply_plot_style(fig):
     """Apply consistent ACS-style formatting to plotly figures."""
+    # Update layout (background, font, margins)
     fig.update_layout(
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        font=dict(family='Arial, sans-serif', size=11, color='#2d2d2d'),
-        xaxis=dict(
-            showgrid=True, gridwidth=0.5, gridcolor='#e0e0e0',
-            linecolor='#000000', linewidth=1.5, mirror=True,
-            ticks='outside', tickwidth=1, tickcolor='#000000', showline=True
-        ),
-        yaxis=dict(
-            showgrid=True, gridwidth=0.5, gridcolor='#e0e0e0',
-            linecolor='#000000', linewidth=1.5, mirror=True,
-            ticks='outside', tickwidth=1, tickcolor='#000000', showline=True
-        )
+        plot_bgcolor='#f0f0f0',  # Light gray background to match dark theme
+        paper_bgcolor='#f0f0f0',  # Light gray paper to match dark theme
+        font=dict(family='Arial, sans-serif', size=11, color='#000000'),  # Full black text
+        margin=dict(l=50, r=30, t=30, b=50, pad=5)  # Tighter margins (~5%)
     )
+    
+    # Update axes separately to preserve titles
+    fig.update_xaxes(
+        showgrid=True, gridwidth=0.5, gridcolor='#d0d0d0',
+        linecolor='#000000', linewidth=1.5, mirror=True,
+        ticks='outside', tickwidth=1, tickcolor='#000000', showline=True,
+        tickfont=dict(color='#000000'),  # Ensure tick labels are black
+        title_font=dict(color='#000000')  # Ensure axis titles are black
+    )
+    
+    fig.update_yaxes(
+        showgrid=True, gridwidth=0.5, gridcolor='#d0d0d0',
+        linecolor='#000000', linewidth=1.5, mirror=True,
+        ticks='outside', tickwidth=1, tickcolor='#000000', showline=True,
+        tickfont=dict(color='#000000'),  # Ensure tick labels are black
+        title_font=dict(color='#000000')  # Ensure axis titles are black
+    )
+    
     return fig
 
 def create_parity_plot(actual, predicted, r_squared, adj_r_squared, rmse, p_value):
-    """Create actual vs predicted parity plot with 95% CI."""
+    """Create actual vs predicted parity plot with 95% CI of the fit."""
     min_val = min(actual.min(), predicted.min())
     max_val = max(actual.max(), predicted.max())
     margin = (max_val - min_val) * 0.1
     plot_min = min_val - margin
     plot_max = max_val + margin
     
+    # Calculate 95% CI of the fit (not prediction interval)
+    n = len(actual)
     residuals = actual - predicted
-    std_resid = np.std(residuals)
-    pred_interval = 1.96 * std_resid
+    mse = np.mean(residuals**2)
+    
+    # For parity plot, CI is tighter near the mean
+    mean_actual = np.mean(actual)
+    x_line = np.linspace(plot_min, plot_max, 100)
+    
+    # Standard error of the fit
+    se_fit = np.sqrt(mse * (1/n + (x_line - mean_actual)**2 / np.sum((actual - mean_actual)**2)))
+    t_crit = stats.t.ppf(0.975, n-2)  # 95% CI
+    ci_width = t_crit * se_fit
     
     fig = go.Figure()
     
-    # 95% CI shaded region
-    x_fill = np.array([plot_min, plot_max, plot_max, plot_min])
-    y_upper = x_fill + pred_interval
-    y_lower = x_fill - pred_interval
+    # 95% CI band (around 1:1 line)
+    y_upper = x_line + ci_width
+    y_lower = x_line - ci_width
     
+    # Add shaded CI region
     fig.add_trace(go.Scatter(
-        x=np.concatenate([x_fill, x_fill[::-1]]),
+        x=np.concatenate([x_line, x_line[::-1]]),
         y=np.concatenate([y_upper, y_lower[::-1]]),
-        fill='toself', fillcolor='rgba(128, 128, 128, 0.2)',
-        line=dict(width=0), showlegend=True, name='95% PI', hoverinfo='skip'
+        fill='toself', fillcolor='rgba(128, 128, 128, 0.25)',
+        line=dict(width=0), showlegend=False, hoverinfo='skip'
     ))
     
     hover_text = [f"Run {i+1}<br>Actual: {a:.3f}<br>Predicted: {p:.3f}" 
@@ -98,13 +121,14 @@ def create_parity_plot(actual, predicted, r_squared, adj_r_squared, rmse, p_valu
         x=actual, y=predicted, mode='markers',
         marker=dict(size=8, color=PLOT_COLORS['primary'], opacity=0.7,
                    line=dict(width=0.5, color='white')),
-        name='Data', text=hover_text, hovertemplate='%{text}<extra></extra>'
+        name='Data', text=hover_text, hovertemplate='%{text}<extra></extra>',
+        showlegend=False
     ))
     
     fig.add_trace(go.Scatter(
         x=[plot_min, plot_max], y=[plot_min, plot_max], mode='lines',
         line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2),
-        name='1:1 Line', hoverinfo='skip'
+        name='1:1 Line', hoverinfo='skip', showlegend=False
     ))
     
     stats_text = (f"R² = {r_squared:.4f}<br>Adj R² = {adj_r_squared:.4f}<br>"
@@ -112,13 +136,14 @@ def create_parity_plot(actual, predicted, r_squared, adj_r_squared, rmse, p_valu
     
     fig.add_annotation(
         xref='paper', yref='paper', x=0.05, y=0.95, text=stats_text,
-        showarrow=False, font=dict(size=10), bgcolor='rgba(255, 255, 255, 0.9)',
+        showarrow=False, font=dict(size=10, color='#000000'), 
+        bgcolor='rgba(255, 255, 255, 0.95)',  # White box with high opacity for readability
         bordercolor='#000000', borderwidth=1, align='left'
     )
     
     fig.update_layout(
         xaxis_title='Actual', yaxis_title='Predicted', height=400,
-        showlegend=True, legend=dict(x=0.02, y=0.02, bgcolor='rgba(255,255,255,0.8)')
+        showlegend=False
     )
     
     fig.update_xaxes(scaleanchor='y', scaleratio=1, range=[plot_min, plot_max])
@@ -127,44 +152,61 @@ def create_parity_plot(actual, predicted, r_squared, adj_r_squared, rmse, p_valu
     return apply_plot_style(fig)
 
 def create_residual_plot(fitted, residuals):
-    """Create residuals vs fitted with studentized reference lines."""
+    """Create studentized residuals vs fitted with color-coded thresholds."""
+    # Calculate studentized residuals
     std_resid = np.std(residuals)
+    studentized = residuals / std_resid
+    
     fig = go.Figure()
     
     x_range = [fitted.min(), fitted.max()]
     
+    # Zero line
     fig.add_trace(go.Scatter(
         x=x_range, y=[0, 0], mode='lines',
-        line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2),
+        line=dict(color='#000000', dash='solid', width=1.5),
         showlegend=False, hoverinfo='skip'
     ))
     
-    for n_std in [1, 2, 3]:
+    # Sigma reference lines with increased opacity
+    for sigma, color in [(1, PLOT_COLORS['sigma1']), 
+                          (2, PLOT_COLORS['sigma2']), 
+                          (3, PLOT_COLORS['sigma3'])]:
         for sign in [1, -1]:
-            y_val = sign * n_std * std_resid
+            y_val = sign * sigma
+            # Convert hex color to rgba with opacity
+            if color == PLOT_COLORS['sigma1']:
+                rgba_color = 'rgba(144, 238, 144, 0.8)'  # Light green
+            elif color == PLOT_COLORS['sigma2']:
+                rgba_color = 'rgba(255, 215, 0, 0.8)'    # Gold
+            else:
+                rgba_color = 'rgba(255, 99, 71, 0.8)'   # Tomato red
+            
             fig.add_trace(go.Scatter(
                 x=x_range, y=[y_val, y_val], mode='lines',
-                line=dict(color=PLOT_COLORS['neutral'], dash='dash', width=1),
+                line=dict(color=rgba_color, dash='dash', width=2),
                 showlegend=False, hoverinfo='skip'
             ))
     
-    hover_text = [f"Run {i+1}<br>Fitted: {f:.3f}<br>Residual: {r:.3f}" 
-                  for i, (f, r) in enumerate(zip(fitted, residuals))]
+    # All data points same color (no color coding)
+    hover_text = [f"Run {i+1}<br>Fitted: {f:.3f}<br>Studentized: {s:.3f}" 
+                  for i, (f, s) in enumerate(zip(fitted, studentized))]
     
     fig.add_trace(go.Scatter(
-        x=fitted, y=residuals, mode='markers',
+        x=fitted, y=studentized, mode='markers',
         marker=dict(size=8, color=PLOT_COLORS['primary'], opacity=0.7,
                    line=dict(width=0.5, color='white')),
-        name='Residuals', text=hover_text, hovertemplate='%{text}<extra></extra>'
+        name='Residuals', text=hover_text, hovertemplate='%{text}<extra></extra>',
+        showlegend=False
     ))
     
     fig.update_layout(
-        xaxis_title='Fitted Values', yaxis_title='Residuals',
+        xaxis_title='Fitted Values', yaxis_title='Studentized Residuals',
         height=400, showlegend=False
     )
     
-    y_max = max(abs(residuals.min()), abs(residuals.max()))
-    y_max = max(y_max, 3 * std_resid) * 1.1
+    y_max = max(abs(studentized.min()), abs(studentized.max()))
+    y_max = max(y_max, 3.5) * 1.1  # At least show ±3σ range
     fig.update_yaxes(range=[-y_max, y_max])
     
     x_range_val = fitted.max() - fitted.min()
@@ -207,7 +249,11 @@ def create_logworth_plot(logworth_df, p_values):
 
 def create_qq_plot(residuals):
     """Create Q-Q normal probability plot."""
-    theoretical = stats.norm.ppf(np.linspace(0.01, 0.99, len(residuals)))
+    # Properly calculate theoretical quantiles using plotting positions
+    n = len(residuals)
+    # Use plotting position: (i - 0.5) / n
+    probabilities = (np.arange(1, n+1) - 0.5) / n
+    theoretical = stats.norm.ppf(probabilities)
     sample = np.sort(residuals)
     
     fig = go.Figure()
@@ -424,6 +470,73 @@ with tab1:
     st.markdown("**ANOVA Table**")
     if not results.anova_table.empty:
         st.dataframe(results.anova_table, use_container_width=True)
+    
+    # Add Lack-of-Fit table
+    st.divider()
+    st.markdown("**Lack-of-Fit Test**")
+    
+    # Check if we have replicates (pure error)
+    n_runs = len(design_filtered)
+    n_params = len([t for t in current_terms if t != '1']) + 1
+    df_model = n_params - 1
+    df_residual = n_runs - n_params
+    
+    # Check for pure replicates (identical factor settings)
+    factor_cols = [f.name for f in factors]
+    duplicates = design_filtered[factor_cols].duplicated(keep=False)
+    has_replicates = duplicates.any()
+    
+    if has_replicates and df_residual > 0:
+        # Calculate pure error from replicates
+        unique_settings = design_filtered[factor_cols].drop_duplicates()
+        n_unique = len(unique_settings)
+        
+        ss_pure_error = 0
+        df_pure_error = 0
+        
+        for idx, row in unique_settings.iterrows():
+            # Find all runs with this setting
+            mask = (design_filtered[factor_cols] == row).all(axis=1)
+            replicate_responses = response_filtered[mask]
+            
+            if len(replicate_responses) > 1:
+                # Pure error from replicates
+                ss_pure_error += np.sum((replicate_responses - replicate_responses.mean())**2)
+                df_pure_error += len(replicate_responses) - 1
+        
+        if df_pure_error > 0:
+            # Calculate lack-of-fit
+            ss_residual = np.sum(results.residuals**2)
+            ss_lof = ss_residual - ss_pure_error
+            df_lof = df_residual - df_pure_error
+            
+            if df_lof > 0:
+                ms_lof = ss_lof / df_lof
+                ms_pure_error = ss_pure_error / df_pure_error
+                f_lof = ms_lof / ms_pure_error
+                p_lof = 1 - stats.f.cdf(f_lof, df_lof, df_pure_error)
+                
+                lof_table = pd.DataFrame({
+                    'Source': ['Lack-of-Fit', 'Pure Error', 'Total Error'],
+                    'DF': [df_lof, df_pure_error, df_residual],
+                    'SS': [ss_lof, ss_pure_error, ss_residual],
+                    'MS': [ms_lof, ms_pure_error, ss_residual/df_residual],
+                    'F': [f_lof, np.nan, np.nan],
+                    'P': [p_lof, np.nan, np.nan]
+                })
+                
+                st.dataframe(lof_table, use_container_width=True, hide_index=True)
+                
+                if p_lof < 0.05:
+                    st.warning(f"⚠️ Lack-of-fit is significant (p = {p_lof:.4f}). Model may be inadequate.")
+                else:
+                    st.success(f"✓ No significant lack-of-fit (p = {p_lof:.4f})")
+            else:
+                st.info("Insufficient degrees of freedom for lack-of-fit test")
+        else:
+            st.info("No pure replicates available for lack-of-fit test")
+    else:
+        st.info("Lack-of-fit test requires replicate runs (identical factor settings)")
 
 with tab2:
     st.markdown("**Coefficient Table**")
@@ -435,53 +548,125 @@ with tab2:
         model_terms = [t for t in current_terms if t != '1']
         
         if model_terms:
-            for term in model_terms:
-                st.markdown(f"**{format_term_for_display(term)}**")
-                
-                try:
-                    X = results.model_matrix
-                    if term in X.columns:
-                        x_vals = X[term].values
-                        other_terms = [t for t in X.columns if t != term and t != 'Intercept']
+            # Get model matrix from fitted model
+            try:
+                if hasattr(results.fitted_model, 'model'):
+                    X_df = pd.DataFrame(
+                        results.fitted_model.model.exog,
+                        columns=results.fitted_model.model.exog_names
+                    )
+                else:
+                    st.error("Cannot access model matrix from fitted model")
+                    X_df = None
+            except Exception as e:
+                st.error(f"Error accessing model matrix: {e}")
+                X_df = None
+            
+            if X_df is not None:
+                for term in model_terms:
+                    st.markdown(f"**{format_term_for_display(term)}**")
+                    
+                    try:
+                        # Find corresponding column in model matrix
+                        # Try multiple matching strategies
+                        term_col = None
                         
-                        if other_terms:
-                            X_other = X[['Intercept'] + other_terms]
-                            lr_other = LinearRegression(fit_intercept=False)
-                            lr_other.fit(X_other, response_filtered)
-                            y_other = lr_other.predict(X_other)
-                            y_adj = response_filtered - y_other + response_filtered.mean()
+                        # Strategy 1: Exact match
+                        if term in X_df.columns:
+                            term_col = term
+                        
+                        # Strategy 2: Replace * with : for interactions
+                        if term_col is None and '*' in term:
+                            term_colon = term.replace('*', ':')
+                            if term_colon in X_df.columns:
+                                term_col = term_colon
+                            # Try reverse order
+                            else:
+                                parts = term.split('*')
+                                if len(parts) == 2:
+                                    reverse_term = f"{parts[1]}:{parts[0]}"
+                                    if reverse_term in X_df.columns:
+                                        term_col = reverse_term
+                        
+                        # Strategy 3: Partial match (for categorical terms with C())
+                        if term_col is None:
+                            for col in X_df.columns:
+                                # Remove categorical encoding syntax
+                                clean_col = col.replace('C(', '').replace(')', '').replace('[T.', '').replace(']', '')
+                                if term == clean_col or term.replace('*', ':') == clean_col:
+                                    term_col = col
+                                    break
+                        
+                        if term_col and term_col in X_df.columns:
+                            x_vals = X_df[term_col].values
+                            other_cols = [c for c in X_df.columns if c != term_col and c != 'Intercept']
+                            
+                            if other_cols:
+                                X_other = X_df[['Intercept'] + other_cols] if 'Intercept' in X_df.columns else X_df[other_cols]
+                                lr_other = LinearRegression(fit_intercept=False)
+                                lr_other.fit(X_other, response_filtered)
+                                y_other = lr_other.predict(X_other)
+                                y_adj = response_filtered - y_other + response_filtered.mean()
+                            else:
+                                y_adj = response_filtered
+                        
+                            fig = go.Figure()
+                            
+                            # Calculate 95% CI of the fit
+                            lr_term = LinearRegression()
+                            lr_term.fit(x_vals.reshape(-1, 1), y_adj)
+                            
+                            # Generate line for plotting
+                            x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
+                            y_line = lr_term.predict(x_line.reshape(-1, 1))
+                            
+                            # Calculate CI
+                            n = len(x_vals)
+                            residuals_leverage = y_adj - lr_term.predict(x_vals.reshape(-1, 1))
+                            mse = np.mean(residuals_leverage**2)
+                            mean_x = np.mean(x_vals)
+                            se_fit = np.sqrt(mse * (1/n + (x_line - mean_x)**2 / np.sum((x_vals - mean_x)**2)))
+                            t_crit = stats.t.ppf(0.975, n-2)
+                            ci_width = t_crit * se_fit
+                            
+                            # Add 95% CI band
+                            y_upper = y_line + ci_width
+                            y_lower = y_line - ci_width
+                            
+                            fig.add_trace(go.Scatter(
+                                x=np.concatenate([x_line, x_line[::-1]]),
+                                y=np.concatenate([y_upper, y_lower[::-1]]),
+                                fill='toself', fillcolor='rgba(128, 128, 128, 0.25)',
+                                line=dict(width=0), showlegend=False, hoverinfo='skip'
+                            ))
+                            
+                            # Add data points
+                            fig.add_trace(go.Scatter(
+                                x=x_vals, y=y_adj, mode='markers',
+                                marker=dict(size=8, color=PLOT_COLORS['primary'], opacity=0.7,
+                                           line=dict(width=0.5, color='white')),
+                                name='Data', showlegend=False
+                            ))
+                            
+                            # Add fit line
+                            fig.add_trace(go.Scatter(
+                                x=x_line, y=y_line, mode='lines',
+                                line=dict(color=PLOT_COLORS['danger'], width=2),
+                                name='Effect', showlegend=False
+                            ))
+                            
+                            fig.update_layout(
+                                xaxis_title=format_term_for_display(term),
+                                yaxis_title=f"{selected_response} (adjusted)",
+                                height=300, showlegend=False
+                            )
+                            fig = apply_plot_style(fig)
+                            st.plotly_chart(fig, use_container_width=True)
                         else:
-                            y_adj = response_filtered
-                        
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(
-                            x=x_vals, y=y_adj, mode='markers',
-                            marker=dict(size=8, color=PLOT_COLORS['primary'], opacity=0.7,
-                                       line=dict(width=0.5, color='white')),
-                            name='Data'
-                        ))
-                        
-                        lr_term = LinearRegression()
-                        lr_term.fit(x_vals.reshape(-1, 1), y_adj)
-                        x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
-                        y_line = lr_term.predict(x_line.reshape(-1, 1))
-                        
-                        fig.add_trace(go.Scatter(
-                            x=x_line, y=y_line, mode='lines',
-                            line=dict(color=PLOT_COLORS['danger'], width=2),
-                            name='Effect'
-                        ))
-                        
-                        fig.update_layout(
-                            xaxis_title=format_term_for_display(term),
-                            yaxis_title=f"{selected_response} (adjusted)",
-                            height=300, showlegend=False
-                        )
-                        fig = apply_plot_style(fig)
-                        st.plotly_chart(fig, use_container_width=True)
-                
-                except Exception as e:
-                    st.error(f"Could not create leverage plot: {e}")
+                            st.warning(f"Could not find term '{term}' in model matrix")
+                    
+                    except Exception as e:
+                        st.error(f"Could not create leverage plot: {e}")
         else:
             st.info("No terms in model (intercept only)")
     
@@ -537,12 +722,20 @@ with tab2:
     
     st.markdown("**Half-Normal Plot**")
     effects_data = results.effect_estimates[results.effect_estimates.index != 'Intercept']
-    if not effects_data.empty and 'Estimate' in effects_data.columns:
-        effects = effects_data['Estimate'].values
-        effect_names = [format_term_for_display(term) for term in effects_data.index]
+    if not effects_data.empty:
+        # Try 'Estimate' first, then 'Coefficient'
+        if 'Estimate' in effects_data.columns:
+            effects = effects_data['Estimate'].values
+        elif 'Coefficient' in effects_data.columns:
+            effects = effects_data['Coefficient'].values
+        else:
+            st.info("No coefficient column found in effect estimates")
+            effects = None
         
-        fig = create_half_normal_plot(effects, effect_names)
-        st.plotly_chart(fig, use_container_width=True)
+        if effects is not None:
+            effect_names = [format_term_for_display(term) for term in effects_data.index]
+            fig = create_half_normal_plot(effects, effect_names)
+            st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No effects to plot (intercept-only model)")
 

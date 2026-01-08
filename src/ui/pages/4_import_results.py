@@ -145,23 +145,46 @@ if "auto-detect" in import_mode.lower():
                         'levels': sorted(col_data.unique().tolist()),
                         'confidence': 'high'
                     }
-                elif n_unique <= 5:
-                    # Few unique values = likely discrete factor
+                elif n_unique <= 10:  # Increased threshold from 5 to 10
+                    # Few unique values = likely factor
                     unique_vals = sorted(col_data.unique())
                     
-                    # Check if values look like coded levels (-1, 0, 1)
-                    if set(unique_vals).issubset({-1, 0, 1}):
+                    # Check if values look like coded levels (-1, 0, 1) or (-1, 1)
+                    if set(unique_vals).issubset({-1, -0.5, 0, 0.5, 1}):
                         detected_factors[col] = {
                             'type': FactorType.CONTINUOUS,
                             'levels': [float(unique_vals[0]), float(unique_vals[-1])],
                             'confidence': 'high',
-                            'note': 'Detected as coded continuous (-1, 0, 1)'
+                            'note': 'Detected as coded continuous (-1 to +1)'
                         }
+                    # Check if values are evenly spaced (suggests continuous)
+                    elif n_unique >= 3:
+                        diffs = np.diff(unique_vals)
+                        is_evenly_spaced = np.allclose(diffs, diffs[0], rtol=0.01)
+                        
+                        if is_evenly_spaced and n_unique >= 5:
+                            # Evenly spaced with 5+ levels → likely continuous
+                            detected_factors[col] = {
+                                'type': FactorType.CONTINUOUS,
+                                'levels': [float(unique_vals[0]), float(unique_vals[-1])],
+                                'confidence': 'medium',
+                                'note': f'Evenly spaced {n_unique} levels - assumed continuous'
+                            }
+                        else:
+                            # Not evenly spaced or fewer levels → discrete numeric
+                            detected_factors[col] = {
+                                'type': FactorType.DISCRETE_NUMERIC,
+                                'levels': [float(v) for v in unique_vals],
+                                'confidence': 'medium',
+                                'note': f'{n_unique} discrete levels'
+                            }
                     else:
+                        # 2 levels only - could be either, default to discrete
                         detected_factors[col] = {
                             'type': FactorType.DISCRETE_NUMERIC,
-                            'levels': [float(v) for v in unique_vals],  # ★ Ensure float
-                            'confidence': 'medium'
+                            'levels': [float(v) for v in unique_vals],
+                            'confidence': 'low',
+                            'note': 'Only 2 levels - review if should be continuous'
                         }
                 else:
                     # Many unique values = likely response

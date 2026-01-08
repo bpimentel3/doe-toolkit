@@ -481,6 +481,6 @@ def display_model_builder(
         # Handle term removal
         if remove_term:
             current_terms = [t for t in current_terms if t != remove_term]
-            st.rerun()  # Force immediate refresh
+            # Don't call st.rerun() here - return updated terms and let parent handle it
     
     return current_terms
