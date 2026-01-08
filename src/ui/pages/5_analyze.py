@@ -15,6 +15,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from scipy import stats
 
 from src.ui.utils.state_management import (
     initialize_session_state,
@@ -24,6 +25,7 @@ from src.ui.utils.state_management import (
     invalidate_downstream_state
 )
 from src.ui.components.quality_dashboard import display_quality_dashboard
+from src.ui.components.model_builder import display_model_builder, format_full_equation
 from src.core.analysis import ANOVAAnalysis, generate_model_terms
 from src.core.diagnostics.summary import (
     compute_design_diagnostic_summary,
@@ -50,17 +52,16 @@ if not responses:
     st.error("No response data available. Please import data in Step 4.")
     st.stop()
 
-# Sidebar: Response Selection
-st.sidebar.header("Analysis Settings")
+# Response Selection (moved to main page)
+st.subheader("📊 Response Selection")
 
-selected_response = st.sidebar.selectbox(
+selected_response = st.selectbox(
     "Select Response to Analyze",
     response_names,
     key='analysis_response_selector'
 )
 
-# Model term builder
-st.sidebar.subheader("Model Terms")
+st.divider()
 
 # Get or initialize model terms for this response
 if 'model_terms_per_response' not in st.session_state:
@@ -73,52 +74,31 @@ if selected_response not in st.session_state['model_terms_per_response']:
 
 current_terms = st.session_state['model_terms_per_response'][selected_response]
 
-# Model type selector
-model_type = st.sidebar.radio(
-    "Model Type",
-    ["Linear", "Interaction", "Quadratic", "Custom"],
-    key=f'model_type_{selected_response}'
+# Model Builder Interface
+updated_terms = display_model_builder(
+    factors=factors,
+    current_terms=current_terms,
+    response_name=selected_response,
+    key_prefix=f"model_builder_{selected_response}"
 )
 
-if model_type != "Custom":
-    type_map = {
-        'Linear': 'linear',
-        'Interaction': 'interaction',
-        'Quadratic': 'quadratic'
-    }
-    suggested_terms = generate_model_terms(
-        factors, type_map[model_type], include_intercept=True
-    )
-    
-    if st.sidebar.button("Apply Model Type"):
-        st.session_state['model_terms_per_response'][selected_response] = suggested_terms
-        invalidate_downstream_state(from_step=5)
-        st.rerun()
+# Check if terms changed
+if updated_terms != current_terms:
+    st.session_state['model_terms_per_response'][selected_response] = updated_terms
+    invalidate_downstream_state(from_step=5)
+    st.rerun()
+
+st.divider()
+
+# Advanced Options in Sidebar
+st.sidebar.header("Advanced Options")
 
 # Hierarchy enforcement
 enforce_hierarchy = st.sidebar.checkbox(
     "Enforce Hierarchy",
     value=True,
-    help="Automatically include lower-order terms"
+    help="Automatically include lower-order terms when fitting model"
 )
-
-# Custom term selection
-if model_type == "Custom":
-    st.sidebar.markdown("**Available Terms:**")
-    
-    all_possible_terms = generate_model_terms(factors, 'quadratic', include_intercept=True)
-    
-    selected_terms = st.sidebar.multiselect(
-        "Select Terms",
-        all_possible_terms,
-        default=current_terms,
-        key=f'custom_terms_{selected_response}'
-    )
-    
-    if st.sidebar.button("Update Model"):
-        st.session_state['model_terms_per_response'][selected_response] = selected_terms
-        invalidate_downstream_state(from_step=5)
-        st.rerun()
 
 # Data exclusion
 st.sidebar.subheader("Data Exclusion")
@@ -141,7 +121,9 @@ if exclude_mode:
         st.session_state['excluded_rows'] = exclude_indices
         invalidate_downstream_state(from_step=5)
 
-# Main content area
+# Results Area
+st.subheader("📈 Analysis Results")
+
 tab1, tab2, tab3 = st.tabs(["📊 Model Fit", "🔍 Diagnostics", "📈 Quality Report"])
 
 # Fit model for current response
@@ -221,33 +203,121 @@ with tab1:
     st.subheader("Effect Estimates")
     st.dataframe(results.effect_estimates, use_container_width=True)
     
-    # LogWorth plot
-    st.subheader("Effect Significance (LogWorth)")
+    # LogWorth plot with p-values - SMALLER SIZE
+    col1, col2 = st.columns([3, 1])
     
-    if not results.logworth.empty:
-        fig = px.bar(
-            results.logworth,
-            x='LogWorth',
-            y=results.logworth.index,
-            orientation='h',
-            title='Effect Significance (-log10(p-value))'
-        )
+    with col1:
+        st.subheader("Effect Significance")
         
-        # Add significance threshold line
-        fig.add_vline(
-            x=-np.log10(0.05),
-            line_dash="dash",
-            line_color="red",
-            annotation_text="p=0.05"
-        )
+        if not results.logworth.empty:
+            # Create figure with reduced height
+            fig = px.bar(
+                results.logworth,
+                x='LogWorth',
+                y=results.logworth.index,
+                orientation='h',
+                title='LogWorth (-log10(p-value))'
+            )
+            
+            # Add significance threshold line
+            fig.add_vline(
+                x=-np.log10(0.05),
+                line_dash="dash",
+                line_color="red",
+                annotation_text="p=0.05"
+            )
+            
+            # Reduce plot height
+            fig.update_layout(height=300)
+            
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("p-values")
         
-        st.plotly_chart(fig, use_container_width=True)
+        if not results.logworth.empty:
+            # Calculate p-values from LogWorth
+            p_values = pd.DataFrame({
+                'Term': results.logworth.index,
+                'p-value': 10 ** (-results.logworth['LogWorth'])
+            })
+            
+            # Format p-values
+            p_values['p-value'] = p_values['p-value'].apply(
+                lambda x: f"{x:.4f}" if x >= 0.0001 else f"{x:.2e}"
+            )
+            
+            st.dataframe(p_values, hide_index=True, use_container_width=True)
 
 # Tab 2: Diagnostics
 with tab2:
     st.subheader("Model Diagnostics")
     
-    # Residual plots
+    # Row 1: Actual vs Predicted (parity plot)
+    st.markdown("**Actual vs Predicted**")
+    
+    # Create parity plot
+    actual = response_filtered
+    predicted = results.fitted_values
+    
+    # Calculate 1:1 line limits
+    min_val = min(actual.min(), predicted.min())
+    max_val = max(actual.max(), predicted.max())
+    margin = (max_val - min_val) * 0.1
+    plot_min = min_val - margin
+    plot_max = max_val + margin
+    
+    fig = go.Figure()
+    
+    # Scatter points
+    fig.add_trace(go.Scatter(
+        x=actual,
+        y=predicted,
+        mode='markers',
+        marker=dict(size=10, opacity=0.6, color='#1f77b4'),
+        name='Data'
+    ))
+    
+    # 1:1 line
+    fig.add_trace(go.Scatter(
+        x=[plot_min, plot_max],
+        y=[plot_min, plot_max],
+        mode='lines',
+        line=dict(color='red', dash='dash', width=2),
+        name='Perfect Fit (1:1)'
+    ))
+    
+    # Fitted line (linear regression through scatter)
+    from sklearn.linear_model import LinearRegression
+    lr = LinearRegression()
+    lr.fit(actual.reshape(-1, 1), predicted)
+    fitted_line_x = np.array([plot_min, plot_max])
+    fitted_line_y = lr.predict(fitted_line_x.reshape(-1, 1))
+    
+    fig.add_trace(go.Scatter(
+        x=fitted_line_x,
+        y=fitted_line_y,
+        mode='lines',
+        line=dict(color='green', width=2),
+        name=f'Fitted (R²={results.r_squared:.3f})'
+    ))
+    
+    fig.update_layout(
+        xaxis_title="Actual",
+        yaxis_title="Predicted",
+        height=400,
+        showlegend=True
+    )
+    
+    # Make axes equal scale
+    fig.update_xaxes(scaleanchor="y", scaleratio=1)
+    fig.update_yaxes(scaleanchor="x", scaleratio=1)
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    st.divider()
+    
+    # Row 2: Residual plots
     col1, col2 = st.columns(2)
     
     with col1:
@@ -263,13 +333,12 @@ with tab2:
         fig.update_layout(
             xaxis_title="Fitted Values",
             yaxis_title="Residuals",
-            height=400
+            height=350
         )
         st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         st.markdown("**Normal Q-Q Plot**")
-        from scipy import stats
         
         theoretical_quantiles = stats.norm.ppf(
             np.linspace(0.01, 0.99, len(results.residuals))
@@ -298,7 +367,7 @@ with tab2:
         fig.update_layout(
             xaxis_title="Theoretical Quantiles",
             yaxis_title="Sample Quantiles",
-            height=400
+            height=350
         )
         st.plotly_chart(fig, use_container_width=True)
     
@@ -311,6 +380,93 @@ with tab2:
         )
         if sw['p_value'] < 0.05:
             st.warning("Residuals may not be normally distributed (p < 0.05)")
+    
+    st.divider()
+    
+    # Leverage plots (hidden in expander)
+    with st.expander("🔍 Leverage Plots (Effect Plots)", expanded=False):
+        st.markdown("""
+        **Leverage plots** show the effect of each term on the response while accounting 
+        for all other terms in the model. The slope indicates the magnitude of the effect.
+        """)
+        
+        # Get model terms (excluding intercept)
+        model_terms = [t for t in current_terms if t != '1']
+        
+        if not model_terms:
+            st.info("No terms to plot (model is intercept-only)")
+        else:
+            # Create leverage plots for each term
+            for term in model_terms:
+                st.markdown(f"**{term}**")
+                
+                try:
+                    # Get the model matrix column for this term
+                    X = results.model_matrix
+                    
+                    # Find column index for this term
+                    if term in X.columns:
+                        # Extract predictor values
+                        x_vals = X[term].values
+                        
+                        # Compute leverage residuals:
+                        # Response adjusted for all other terms
+                        other_terms = [t for t in X.columns if t != term and t != 'Intercept']
+                        
+                        if other_terms:
+                            # Fit model without this term
+                            from sklearn.linear_model import LinearRegression
+                            X_other = X[['Intercept'] + other_terms]
+                            lr_other = LinearRegression(fit_intercept=False)
+                            lr_other.fit(X_other, response_filtered)
+                            y_other = lr_other.predict(X_other)
+                            
+                            # Adjusted response (what's left after removing other terms)
+                            y_adj = response_filtered - y_other + response_filtered.mean()
+                        else:
+                            # If no other terms, just use raw response
+                            y_adj = response_filtered
+                        
+                        # Create leverage plot
+                        fig = go.Figure()
+                        
+                        # Scatter
+                        fig.add_trace(go.Scatter(
+                            x=x_vals,
+                            y=y_adj,
+                            mode='markers',
+                            marker=dict(size=8, opacity=0.6),
+                            name='Data'
+                        ))
+                        
+                        # Fitted line for this term
+                        lr_term = LinearRegression()
+                        lr_term.fit(x_vals.reshape(-1, 1), y_adj)
+                        x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
+                        y_line = lr_term.predict(x_line.reshape(-1, 1))
+                        
+                        fig.add_trace(go.Scatter(
+                            x=x_line,
+                            y=y_line,
+                            mode='lines',
+                            line=dict(color='red', width=2),
+                            name='Effect'
+                        ))
+                        
+                        fig.update_layout(
+                            xaxis_title=term,
+                            yaxis_title=f"{selected_response} (adjusted)",
+                            height=300,
+                            showlegend=False
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    else:
+                        st.warning(f"Term '{term}' not found in model matrix")
+                
+                except Exception as e:
+                    st.error(f"Could not create leverage plot for '{term}': {e}")
 
 # Tab 3: Quality Report
 with tab3:

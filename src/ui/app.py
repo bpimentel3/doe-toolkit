@@ -1,20 +1,19 @@
 """
-DOE Toolkit - Main Streamlit Application
+DOE Toolkit - Main Streamlit Application (Enhanced)
 
-A free, open-source Design of Experiments toolkit for engineers.
+NEW: Multiple workflow entry points including "Start by Importing Data"
 """
 
 import sys
 from pathlib import Path
 
-# Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 import streamlit as st
 from src.ui.utils.state_management import (
     initialize_session_state,
-    display_workflow_progress,
+    update_workflow_progress_display,  # Use enhanced version
     get_workflow_progress
 )
 
@@ -35,8 +34,8 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Display workflow progress
-    display_workflow_progress()
+    # Display enhanced workflow progress (includes data status)
+    update_workflow_progress_display()
     
     st.markdown("---")
     
@@ -45,8 +44,6 @@ with st.sidebar:
     
     progress = get_workflow_progress()
     
-    # Page navigation using st.page_link
-    # Note: page_link automatically disables inaccessible pages
     st.page_link("app.py", label="🏠 Home", icon="🏠")
     
     st.page_link(
@@ -69,8 +66,8 @@ with st.sidebar:
     
     st.page_link(
         "pages/4_import_results.py",
-        label="4. Import Results",
-        disabled=not progress['accessible'][3]
+        label="4. Import Results"
+        # NO disabled - always accessible
     )
     
     st.page_link(
@@ -96,7 +93,6 @@ with st.sidebar:
     # Project file management
     st.markdown("### 💾 Project")
     
-    # Save project
     if st.sidebar.button("💾 Save Project", use_container_width=True):
         st.session_state['show_save_project'] = True
     
@@ -119,7 +115,6 @@ with st.sidebar:
         except Exception as e:
             st.sidebar.error(f"Save failed: {e}")
     
-    # Load project
     uploaded_project = st.sidebar.file_uploader(
         "📂 Load Project",
         type=['doeproject', 'json'],
@@ -140,7 +135,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Help & Info
     with st.expander("ℹ️ About DOE Toolkit"):
         st.markdown("""
         **Free, open-source Design of Experiments software**
@@ -165,7 +159,7 @@ with st.sidebar:
         **Report Issues:** [GitHub Issues](https://github.com/bpimentel3/doe-toolkit/issues)
         
         **Quick Tips:**
-        - Start by defining your experimental factors
+        - You can start by defining factors OR importing existing data
         - All data stays on your machine (local-first)
         - Download designs as CSV at any step
         - Use hierarchy enforcement for stable models
@@ -175,62 +169,108 @@ with st.sidebar:
 st.title("🔬 DOE Toolkit")
 st.markdown("### Professional Design of Experiments for Everyone")
 
-# Welcome message
 st.markdown("""
 Welcome to DOE Toolkit! This free, open-source software helps you design experiments, 
 analyze results, and find optimal settings—no programming required.
 
-**Get started by defining your experimental factors** using the sidebar navigation or the button below.
+**Choose how you want to start:**
 """)
 
 st.divider()
 
-# Quick start section
-col1, col2, col3 = st.columns(3)
+# Workflow entry points
+col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("#### 🎯 Step 1: Define Factors")
+    st.markdown("### 🆕 Start Fresh")
+    
     st.markdown("""
-    Start by defining your experimental factors:
-    - Continuous (temperature, pressure)
-    - Discrete numeric (RPM settings)
-    - Categorical (materials, methods)
+    **Traditional Workflow**
+    
+    1. Define your experimental factors
+    2. Generate an optimal design
+    3. Run experiments
+    4. Import results
+    5. Analyze and optimize
     """)
     
-    if st.button("Define Factors →", type="primary", use_container_width=True):
+    if st.button("1️⃣ Define Factors →", type="primary", use_container_width=True):
         st.session_state['current_step'] = 1
         st.switch_page("pages/1_define_factors.py")
+    
+    st.caption("Best for: New experiments, need design guidance")
 
 with col2:
-    st.markdown("#### 📊 Step 2-5: Design & Analyze")
+    st.markdown("### 📂 Import Existing Data")
+    
     st.markdown("""
-    - Choose design type
-    - Preview runs before experimenting
-    - Import your data
-    - Fit ANOVA models
+    **Data-First Workflow**
+    
+    1. Upload your design + results CSV
+    2. Auto-detect factors and responses
+    3. Analyze immediately
+    4. Augment if needed
+    5. Optimize
     """)
     
-    if progress['completed'][0]:
-        if st.button("Continue Workflow →", use_container_width=True):
-            # Navigate to first incomplete step
-            for i in range(1, 8):
-                if not progress['completed'][i-1]:
-                    st.session_state['current_step'] = i
-                    st.switch_page(pages[i-1][0])
-                    break
+    if st.button("4️⃣ Import Data →", type="primary", use_container_width=True):
+        st.session_state['current_step'] = 4
+        st.switch_page("pages/4_import_results.py")
+    
+    st.caption("Best for: Existing data, completed experiments")
 
-with col3:
-    st.markdown("#### 🎯 Step 6-7: Augment & Optimize")
-    st.markdown("""
-    - Add strategic runs if needed
-    - Find optimal factor settings
-    - Maximize/minimize responses
-    """)
+st.divider()
+
+# Continue existing workflow if in progress
+progress = get_workflow_progress()
+
+if any(progress['completed']):
+    st.markdown("### 📋 Continue Where You Left Off")
     
-    if progress['completed'][4]:
-        if st.button("Go to Optimization →", use_container_width=True):
-            st.session_state['current_step'] = 7
-            st.switch_page("pages/7_optimize.py")
+    # Find first incomplete step
+    next_step = None
+    for i in range(1, 8):
+        if not progress['completed'][i-1] and progress['accessible'][i-1]:
+            next_step = i
+            break
+    
+    if next_step:
+        step_names = [
+            "Define Factors",
+            "Choose Design",
+            "Preview Design", 
+            "Import Results",
+            "Analyze",
+            "Augmentation",
+            "Optimize"
+        ]
+        
+        col1, col2, col3 = st.columns([2, 1, 2])
+        
+        with col1:
+            st.markdown(f"**Next step:** {step_names[next_step-1]}")
+            
+            # Show progress
+            completed_count = sum(progress['completed'])
+            st.progress(completed_count / 7, text=f"{completed_count}/7 steps complete")
+        
+        with col2:
+            st.markdown("")  # Spacer
+        
+        with col3:
+            pages = [
+                "pages/1_define_factors.py",
+                "pages/2_choose_design.py",
+                "pages/3_preview_design.py",
+                "pages/4_import_results.py",
+                "pages/5_analyze.py",
+                "pages/6_augmentation.py",
+                "pages/7_optimize.py"
+            ]
+            
+            if st.button(f"Continue to Step {next_step} →", type="primary", use_container_width=True):
+                st.session_state['current_step'] = next_step
+                st.switch_page(pages[next_step-1])
 
 st.divider()
 
@@ -265,6 +305,14 @@ with st.expander("📚 Example Workflows"):
     4. Analyze with quadratic model
     5. Find optimal settings (maximize Yield)
     
+    **Import Existing Experiment:**
+    1. Upload CSV with completed experiment data
+    2. App auto-detects 7 factors and 2 responses
+    3. Map any mismatched column names
+    4. Analyze immediately with ANOVA
+    5. Augment design if quality issues detected
+    6. Optimize for best settings
+    
     **Pharmaceutical Formulation Screening:**
     1. Define 7 factors (5 continuous, 2 categorical)
     2. Generate Fractional Factorial (Resolution V, 32 runs)
@@ -272,13 +320,6 @@ with st.expander("📚 Example Workflows"):
     4. Analyze split-plot design (mixing = hard to change)
     5. Identify significant factors
     6. Augment with foldover if needed
-    
-    **Chemical Process Development:**
-    1. Define factors: Catalyst (A/B/C), pH (4-8), Concentration (10-30%)
-    2. Generate D-Optimal Design (20 runs with constraints)
-    3. Measure Conversion and Selectivity
-    4. Fit multi-response model
-    5. Optimize desirability function
     """)
 
 # Footer

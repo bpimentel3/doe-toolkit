@@ -113,16 +113,31 @@ design_options = {
 
 # Display design options
 design_choice = None
+current_design = st.session_state.get('design_type')
 
 for design_name, design_info in design_options.items():
     if design_info["enabled"]:
-        with st.expander(f"✓ {design_name}", expanded=False):
+        # Check if this is the selected design
+        is_selected = (design_name == current_design)
+        
+        # Customize expander label based on selection
+        if is_selected:
+            expander_label = f"✅ {design_name} (Currently Selected)"
+        else:
+            expander_label = f"✓ {design_name}"
+        
+        with st.expander(expander_label, expanded=is_selected):
             st.markdown(f"**{design_info['description']}**")
             st.markdown(f"**When to use:** {design_info['when_to_use']}")
             st.markdown(f"**Typical runs:** {design_info['runs']}")
             
-            if st.button(f"Select {design_name}", key=f"select_{design_name}"):
+            if is_selected:
+                st.info("🎯 This design is currently selected. Modify configuration below or choose a different design.")
+            
+            if st.button(f"Select {design_name}", key=f"select_{design_name}", disabled=is_selected, type="primary" if not is_selected else "secondary"):
                 design_choice = design_name
+                # Set flag to scroll after rerun
+                st.session_state['scroll_to_config'] = True
     else:
         with st.expander(f"🔒 {design_name} (Not Available)", expanded=False):
             st.markdown(f"**{design_info['description']}**")
@@ -147,8 +162,48 @@ if design_choice:
 
 # If design already selected, show configuration
 if st.session_state.get('design_type'):
+    # Add spacer to help with scrolling visibility
+    st.markdown("<br>", unsafe_allow_html=True)
+    
     st.divider()
-    st.subheader(f"Configure {st.session_state['design_type']}")
+    
+    # Visual indicator when just selected
+    if st.session_state.get('scroll_to_config', False):
+        # Add attention-grabbing banner
+        st.markdown(
+            f"""
+            <div style="
+                background: linear-gradient(90deg, #4CAF50 0%, #45a049 100%);
+                color: white;
+                padding: 20px;
+                border-radius: 10px;
+                text-align: center;
+                font-size: 18px;
+                font-weight: bold;
+                margin-bottom: 20px;
+                animation: slideDown 0.5s ease-out;
+            ">
+                ✅ {st.session_state['design_type']} Selected! Configure Options Below ⬇️
+            </div>
+            <style>
+                @keyframes slideDown {{
+                    from {{
+                        opacity: 0;
+                        transform: translateY(-20px);
+                    }}
+                    to {{
+                        opacity: 1;
+                        transform: translateY(0);
+                    }}
+                }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        # Reset flag
+        st.session_state['scroll_to_config'] = False
+    
+    st.subheader(f"⚙️ Configure {st.session_state['design_type']}")
     
     design_type = st.session_state['design_type']
     

@@ -118,7 +118,14 @@ def is_step_complete(step: int) -> bool:
         return st.session_state.get('design') is not None
     
     elif step == 4:  # Import Results
-        return len(st.session_state.get('responses', {})) > 0
+        # FIXED: Check both responses dict AND design exists
+        # Allow step 4 to be complete if user imported CSV with auto-detect
+        # which creates both design and responses simultaneously
+        responses = st.session_state.get('responses', {})
+        design = st.session_state.get('design')
+        
+        # Step 4 is complete if we have responses AND design
+        return (len(responses) > 0) and (design is not None)
     
     elif step == 5:  # Analysis
         return len(st.session_state.get('fitted_models', {})) > 0
@@ -155,6 +162,16 @@ def can_access_step(step: int) -> bool:
     # Can always access step 1
     if step == 1:
         return True
+    
+    # Step 4 can be accessed from home (auto-detect mode)
+    # This allows users to start by importing CSV
+    if step == 4:
+        return True
+    
+    # For step 5 (Analyze), check if step 4 is complete
+    # This is the critical fix - we need design AND responses
+    if step == 5:
+        return is_step_complete(4)
     
     # For other steps, all previous steps must be complete
     for i in range(1, step):
@@ -439,16 +456,6 @@ def create_project_file() -> str:
     return json.dumps(project, indent=2)
 
 
-"""
-Session State Management with Factor Name Sanitization.
-
-This is the updated load_project_file function from state_management.py
-that handles legacy factor names.
-
-INSTRUCTIONS: Replace the load_project_file function in 
-src/ui/utils/state_management.py with this version.
-"""
-
 def load_project_file(file_content: str) -> None:
     """
     Load project from JSON file content with factor name sanitization.
@@ -645,7 +652,6 @@ def load_project_file(file_content: str) -> None:
         st.success("✓ Project loaded successfully!")
 
 
-# Additional helper function for CSV imports
 def sanitize_design_columns(design: pd.DataFrame, factors: list) -> pd.DataFrame:
     """
     Sanitize column names in imported design to match factor names.
@@ -663,27 +669,16 @@ def sanitize_design_columns(design: pd.DataFrame, factors: list) -> pd.DataFrame
     -------
     pd.DataFrame
         Design with sanitized column names
-    
-    Examples
-    --------
-    >>> # In 4_import_results.py after loading CSV
-    >>> design = sanitize_design_columns(uploaded_df, factors)
     """
     from src.core.factors import sanitize_factor_name
     
     # Build mapping from potential unsafe names to safe names
     factor_map = {}
     for factor in factors:
-        # The factor already has a safe name, but the CSV might have the original
-        # We need to handle both the case where CSV has safe names and unsafe names
-        
-        # Create reverse mapping: try common variations
         safe_name = factor.name
         
-        # For now, just ensure all factor names in design match
-        # This is a simplified version - you might need more sophisticated matching
+        # If safe_name not in design, try to find column that sanitizes to it
         if safe_name not in design.columns:
-            # Try to find a column that might sanitize to this name
             for col in design.columns:
                 sanitized_col, _ = sanitize_factor_name(col)
                 if sanitized_col == safe_name:
@@ -697,3 +692,81 @@ def sanitize_design_columns(design: pd.DataFrame, factors: list) -> pd.DataFrame
         )
     
     return design
+
+
+def display_data_status() -> None:
+    """
+    Display current data status in sidebar.
+    
+    Shows summary of loaded design and responses.
+    """
+    design = st.session_state.get('design')
+    responses = st.session_state.get('responses', {})
+    factors = st.session_state.get('factors', [])
+    
+    if design is None and not responses:
+        return  # No data loaded
+    
+    st.sidebar.markdown("### 📊 Current Data")
+    
+    if design is not None:
+        design_type = st.session_state.get('design_metadata', {}).get('design_type', 'Unknown')
+        
+        st.sidebar.markdown(f"**Design:** {design_type.replace('_', ' ').title()}")
+        st.sidebar.markdown(f"- {len(design)} runs")
+        st.sidebar.markdown(f"- {len(factors)} factors")
+        
+        # Show block/phase info if present
+        if 'Block' in design.columns:
+            n_blocks = design['Block'].nunique()
+            st.sidebar.markdown(f"- {n_blocks} blocks")
+        
+        if 'Phase' in design.columns:
+            phases = design['Phase'].value_counts().sort_index()
+            if len(phases) > 1:
+                st.sidebar.markdown(
+                    f"- Phase 1: {phases.get(1, 0)} runs"
+                )
+                st.sidebar.markdown(
+                    f"- Phase 2: {phases.get(2, 0)} runs (augmented)"
+                )
+    
+    if responses:
+        st.sidebar.markdown(f"**Responses:** {len(responses)}")
+        for name in list(responses.keys())[:3]:  # Show first 3
+            st.sidebar.markdown(f"- {name}")
+        
+        if len(responses) > 3:
+            st.sidebar.markdown(f"- ... and {len(responses) - 3} more")
+    
+    st.sidebar.markdown("---")
+
+
+def update_workflow_progress_display() -> None:
+    """
+    Enhanced workflow progress display.
+    
+    This replaces the display_workflow_progress function
+    to include data status.
+    """
+    progress = get_workflow_progress()
+    
+    st.sidebar.markdown("### 📋 Workflow Progress")
+    
+    for i, step_name in enumerate(progress['steps'], start=1):
+        if progress['completed'][i-1]:
+            icon = "✅"
+        elif progress['accessible'][i-1]:
+            icon = "⭕"
+        else:
+            icon = "🔒"
+        
+        if i == progress['current_step']:
+            st.sidebar.markdown(f"**{icon} {i}. {step_name}**")
+        else:
+            st.sidebar.markdown(f"{icon} {i}. {step_name}")
+    
+    st.sidebar.markdown("---")
+    
+    # Add data status below workflow progress
+    display_data_status()
