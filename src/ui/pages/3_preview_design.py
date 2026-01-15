@@ -24,6 +24,10 @@ from src.ui.utils.state_management import (
 )
 from src.core.factors import Factor
 from src.ui.utils.csv_parser import generate_doe_csv
+from src.ui.components.constraint_builder import (
+    format_constraint_preview,
+    validate_constraints
+)
 
 
 def _validate_response_name(name: str, existing_responses: list) -> bool:
@@ -203,6 +207,35 @@ if st.session_state.get('design') is None:
             seed = st.number_input("Seed", min_value=0, value=42, step=1)
         else:
             seed = None
+    
+    # Validate and display constraints if D-Optimal
+    if design_type == "D-Optimal":
+        constraints = st.session_state.get('constraints', [])
+        
+        if constraints:
+            st.info(f"ℹ️ Design will respect {len(constraints)} constraint(s)")
+            
+            with st.expander("View Constraints"):
+                for i, constraint in enumerate(constraints):
+                    constraint_str = format_constraint_preview(
+                        constraint.coefficients,
+                        constraint.bound,
+                        constraint.constraint_type
+                    )
+                    st.code(f"{i+1}. {constraint_str}")
+            
+            # Validate constraints
+            is_valid, warnings = validate_constraints(constraints, factors)
+            
+            if not is_valid:
+                st.error("❌ **Invalid Constraints**")
+                for warning in warnings:
+                    st.error(warning)
+                st.stop()
+            
+            if warnings:
+                for warning in warnings:
+                    st.warning(warning)
     
     # Generate button
     if st.button("🔬 Generate Design", type="primary", use_container_width=True):
@@ -496,6 +529,20 @@ else:
                     st.code(f"{gen[0]} = {gen[1]}")
                 else:
                     st.code(gen)
+    
+    # Show constraints for D-Optimal designs
+    if design_type == "D-Optimal" and st.session_state.get('constraints'):
+        with st.expander("📌 Applied Constraints"):
+            constraints = st.session_state['constraints']
+            st.markdown(f"**{len(constraints)} constraint(s) were applied:**")
+            for i, constraint in enumerate(constraints):
+                constraint_str = format_constraint_preview(
+                    constraint.coefficients,
+                    constraint.bound,
+                    constraint.constraint_type
+                )
+                st.code(f"{i+1}. {constraint_str}")
+            st.info("✅ All design points satisfy these constraints")
     
     if metadata.get('is_split_plot'):
         with st.expander("📊 Split-Plot Structure"):

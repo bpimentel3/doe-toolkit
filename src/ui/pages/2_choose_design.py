@@ -20,6 +20,10 @@ from src.ui.utils.state_management import (
     invalidate_downstream_state
 )
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
+from src.ui.components.constraint_builder import (
+    show_constraint_builder,
+    show_constraint_help
+)
 
 # Initialize state
 initialize_session_state()
@@ -398,21 +402,25 @@ if st.session_state.get('design_type'):
             help="More runs = better precision"
         )
         
-        # Constraints (simplified)
-        st.markdown("**Constraints** (advanced, optional)")
+        st.divider()
         
-        has_constraints = st.checkbox("Add Constraints")
+        # Constraints (full implementation)
+        show_constraint_builder(factors)
+        show_constraint_help()
         
-        if has_constraints:
-            st.warning("Constraint specification will open in next version. For now, design without constraints.")
+        # Store config with constraints
+        constraints = st.session_state.get('constraints', [])
         
         st.session_state['design_config'] = {
             'model_type': model_type,
             'n_runs': n_runs,
-            'has_constraints': has_constraints
+            'n_constraints': len(constraints)
         }
         
-        st.info(f"**Number of runs:** {n_runs}")
+        if constraints:
+            st.info(f"**Number of runs:** {n_runs} | **Constraints:** {len(constraints)}")
+        else:
+            st.info(f"**Number of runs:** {n_runs}")
     
     elif design_type == "Latin Hypercube":
         st.markdown("**Latin Hypercube Sampling Configuration**")
