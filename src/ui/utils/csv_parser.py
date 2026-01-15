@@ -182,11 +182,14 @@ def extract_factor_definitions(lines: List[str]) -> List[Factor]:
             in_section = True
             continue
 
-        if in_section and line.startswith("# RESPONSE DEFINITIONS"):
+        if in_section and (line.startswith("# RESPONSE DEFINITIONS") or line.startswith("# DESIGN DATA")):
             break
 
-        if not in_section or not line.startswith("#"):
+        if not in_section:
             continue
+        
+        if not line.startswith("#"):
+            break
 
         # Skip header and empty lines
         if "Name,Type" in line:
@@ -236,7 +239,7 @@ def _parse_factor_line(line: str) -> Factor:
 
     parts = [p.strip() for p in content.split(",")]
     if len(parts) < 4:
-        raise ValueError(f"Expected 5 fields, got {len(parts)}")
+        raise ValueError(f"Expected at least 4 fields, got {len(parts)}")
 
     name, type_str, changeability_str, levels_str = (
         parts[0],
@@ -264,58 +267,48 @@ def _parse_factor_line(line: str) -> Factor:
             f"Must be one of: {[c.value for c in ChangeabilityLevel]}"
         )
 
-    # Parse levels
+    # Parse levels based on factor type
     if factor_type == FactorType.CONTINUOUS:
         level_values = levels_str.split("|")
         if len(level_values) != 2:
             raise ValueError(f"Continuous factor must have min|max, got {levels_str}")
         try:
-            min_val = float(level_values[0])
-            max_val = float(level_values[1])
+            levels = [float(level_values[0]), float(level_values[1])]
         except ValueError:
             raise ValueError(f"Continuous levels must be numeric: {levels_str}")
 
-        if min_val >= max_val:
-            raise ValueError(f"Min must be < max: {min_val} >= {max_val}")
-
-        return Factor(
-            name=name,
-            factor_type=factor_type,
-            changeability=changeability,
-            min_value=min_val,
-            max_value=max_val,
-            units=units if units else None,
-        )
+        if levels[0] >= levels[1]:
+            raise ValueError(f"Min must be < max: {levels[0]} >= {levels[1]}")
 
     elif factor_type == FactorType.DISCRETE_NUMERIC:
-        level_values = [float(x.strip()) for x in levels_str.split("|")]
-        if len(level_values) < 2:
+        try:
+            levels = [float(x.strip()) for x in levels_str.split("|")]
+        except ValueError:
+            raise ValueError(f"Discrete numeric levels must be numeric: {levels_str}")
+        
+        if len(levels) < 2:
             raise ValueError(
                 f"Discrete factor must have at least 2 levels, got {levels_str}"
             )
-        return Factor(
-            name=name,
-            factor_type=factor_type,
-            changeability=changeability,
-            discrete_values=level_values,
-            units=units if units else None,
-        )
 
     elif factor_type == FactorType.CATEGORICAL:
-        level_values = [x.strip() for x in levels_str.split("|")]
-        if len(level_values) < 2:
+        levels = [x.strip() for x in levels_str.split("|")]
+        if len(levels) < 2:
             raise ValueError(
                 f"Categorical factor must have at least 2 levels, got {levels_str}"
             )
-        return Factor(
-            name=name,
-            factor_type=factor_type,
-            changeability=changeability,
-            categorical_levels=level_values,
-            units=units if units else None,
-        )
 
-    raise ValueError(f"Unhandled factor type: {factor_type}")
+    else:
+        raise ValueError(f"Unhandled factor type: {factor_type}")
+
+    return Factor(
+        name=name,
+        factor_type=factor_type,
+        changeability=changeability,
+        levels=levels,
+        units=units if units else None,
+        _validate_on_init=False,  # Validation already done during parsing
+    )
 
 
 def extract_response_definitions(lines: List[str]) -> List[Dict[str, Optional[str]]]:
@@ -352,8 +345,11 @@ def extract_response_definitions(lines: List[str]) -> List[Dict[str, Optional[st
         if in_section and line.startswith("# DESIGN DATA"):
             break
 
-        if not in_section or not line.startswith("#"):
+        if not in_section:
             continue
+        
+        if not line.startswith("#"):
+            break
 
         # Skip header and empty lines
         if "Name,Units" in line:
@@ -535,12 +531,11 @@ def generate_doe_csv(
         changeability_str = factor.changeability.value
         units_str = factor.units if factor.units else ""
 
-        if factor.factor_type == FactorType.CONTINUOUS:
-            levels_str = f"{factor.min_value}|{factor.max_value}"
-        elif factor.factor_type == FactorType.DISCRETE_NUMERIC:
-            levels_str = "|".join(str(v) for v in factor.discrete_values)
-        else:  # CATEGORICAL
-            levels_str = "|".join(factor.categorical_levels)
+        # Format levels based on type
+        if factor.is_continuous():
+            levels_str = f"{factor.levels[0]}|{factor.levels[1]}"
+        else:  # discrete or categorical
+            levels_str = "|".join(str(v) for v in factor.levels)
 
         lines.append(
             f"# {factor.name},{factor_type_str},{changeability_str},{levels_str},{units_str}"

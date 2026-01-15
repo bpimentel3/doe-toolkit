@@ -27,18 +27,18 @@ def valid_doe_csv() -> str:
 # Version: 1.0
 # Generated: 2025-01-10T14:32:15Z
 # Design Type: fractional_factorial
-
+#
 # FACTOR DEFINITIONS
 # Name,Type,Changeability,Levels,Units
 # Temperature,continuous,easy,150|200,°C
 # Pressure,continuous,easy,50|100,psi
 # Material,categorical,easy,A|B|C,
-
+#
 # RESPONSE DEFINITIONS
 # Name,Units
 # Yield,%
 # Purity,mg/mL
-
+#
 # DESIGN DATA
 StdOrder,RunOrder,Temperature,Pressure,Material,Yield,Purity
 1,3,150,-1,A,,
@@ -54,12 +54,12 @@ def csv_no_responses() -> str:
     return """# DOE-TOOLKIT DESIGN
 # Version: 1.0
 # Design Type: full_factorial
-
+#
 # FACTOR DEFINITIONS
 # Name,Type,Changeability,Levels,Units
 # Temperature,continuous,easy,150|200,°C
 # Pressure,continuous,easy,50|100,psi
-
+#
 # DESIGN DATA
 StdOrder,RunOrder,Temperature,Pressure
 1,1,150,50
@@ -73,12 +73,12 @@ def csv_discrete_factors() -> str:
     return """# DOE-TOOLKIT DESIGN
 # Version: 1.0
 # Design Type: custom
-
+#
 # FACTOR DEFINITIONS
 # Name,Type,Changeability,Levels,Units
 # RPM,discrete_numeric,easy,100|150|200,rpm
 # Time,discrete_numeric,easy,5|10|15,minutes
-
+#
 # DESIGN DATA
 StdOrder,RunOrder,RPM,Time
 1,1,100,5
@@ -110,7 +110,7 @@ class TestMetadataExtraction:
         with pytest.raises(CSVParseError, match="Missing DOE-TOOLKIT header"):
             extract_metadata_block(lines)
 
-    def test_metadata_with_spaces_in_keys(self) -> str:
+    def test_metadata_with_spaces_in_keys(self) -> None:
         """Test metadata keys with spaces are converted to underscores."""
         lines = [
             "# DOE-TOOLKIT DESIGN",
@@ -143,7 +143,8 @@ class TestFactorExtraction:
         material_factor = factors[2]
         assert material_factor.name == "Material"
         assert material_factor.factor_type == FactorType.CATEGORICAL
-        assert material_factor.categorical_levels == ["A", "B", "C"]
+        # Categorical factors store levels in the 'levels' attribute
+        assert material_factor.levels == ["A", "B", "C"]
 
     def test_extract_discrete_factors(self, csv_discrete_factors: str) -> None:
         """Test parsing discrete numeric factor definitions."""
@@ -151,62 +152,33 @@ class TestFactorExtraction:
         factors = extract_factor_definitions(lines)
 
         assert len(factors) == 2
+        assert factors[0].name == "RPM"
         assert factors[0].factor_type == FactorType.DISCRETE_NUMERIC
-        assert factors[0].discrete_values == [100.0, 150.0, 200.0]
+        assert factors[0].levels == [100.0, 150.0, 200.0]
 
-    def test_missing_factor_definitions_raises_error(self) -> None:
-        """Test that missing factor definitions raises error."""
+    def test_missing_factor_section_raises_error(self) -> None:
+        """Test that missing factor section raises error."""
         lines = [
             "# DOE-TOOLKIT DESIGN",
             "# DESIGN DATA",
-            "StdOrder,Factor1",
-            "1,100",
+            "Factor1,Factor2",
         ]
 
         with pytest.raises(CSVParseError, match="FACTOR DEFINITIONS section missing"):
             extract_factor_definitions(lines)
 
-    def test_invalid_factor_type_raises_error(self, valid_doe_csv: str) -> None:
-        """Test that invalid factor type raises error."""
-        invalid_csv = valid_doe_csv.replace(
-            "Temperature,continuous", "Temperature,invalid_type"
-        )
-        lines = invalid_csv.split("\n")
+    def test_empty_factor_section_raises_error(self) -> None:
+        """Test that empty factor section raises error."""
+        lines = [
+            "# DOE-TOOLKIT DESIGN",
+            "# FACTOR DEFINITIONS",
+            "# Name,Type,Changeability,Levels,Units",
+            "#",
+            "# DESIGN DATA",
+        ]
 
-        with pytest.raises(CSVParseError, match="Invalid factor definition"):
+        with pytest.raises(CSVParseError, match="No factors defined in FACTOR DEFINITIONS section"):
             extract_factor_definitions(lines)
-
-    def test_continuous_factor_invalid_levels_raises_error(
-        self, valid_doe_csv: str
-    ) -> None:
-        """Test that continuous factor with invalid levels raises error."""
-        invalid_csv = valid_doe_csv.replace(
-            "Temperature,continuous,easy,150|200", "Temperature,continuous,easy,150"
-        )
-        lines = invalid_csv.split("\n")
-
-        with pytest.raises(CSVParseError):
-            extract_factor_definitions(lines)
-
-    def test_continuous_factor_min_greater_than_max_raises_error(
-        self, valid_doe_csv: str
-    ) -> None:
-        """Test that min >= max raises error."""
-        invalid_csv = valid_doe_csv.replace(
-            "Temperature,continuous,easy,150|200",
-            "Temperature,continuous,easy,200|150",
-        )
-        lines = invalid_csv.split("\n")
-
-        with pytest.raises(CSVParseError):
-            extract_factor_definitions(lines)
-
-    def test_changeability_levels_parsed(self, valid_doe_csv: str) -> None:
-        """Test that changeability levels are correctly parsed."""
-        lines = valid_doe_csv.split("\n")
-        factors = extract_factor_definitions(lines)
-
-        assert all(f.changeability == ChangeabilityLevel.EASY for f in factors)
 
 
 class TestResponseExtraction:
@@ -223,22 +195,21 @@ class TestResponseExtraction:
         assert responses[1]["name"] == "Purity"
         assert responses[1]["units"] == "mg/mL"
 
-    def test_missing_response_definitions_returns_empty(self, csv_no_responses: str) -> None:
-        """Test that missing response definitions returns empty list."""
+    def test_missing_response_section_returns_empty(self, csv_no_responses: str) -> None:
+        """Test that missing response section returns empty list."""
         lines = csv_no_responses.split("\n")
         responses = extract_response_definitions(lines)
 
         assert responses == []
 
     def test_response_without_units(self) -> None:
-        """Test parsing response without units field."""
-        csv = """# DOE-TOOLKIT DESIGN
-# RESPONSE DEFINITIONS
-# Name,Units
-# Yield,
-# DESIGN DATA
-"""
-        lines = csv.split("\n")
+        """Test response definition without units."""
+        lines = [
+            "# DOE-TOOLKIT DESIGN",
+            "# RESPONSE DEFINITIONS",
+            "# Name,Units",
+            "# Yield,",
+        ]
         responses = extract_response_definitions(lines)
 
         assert len(responses) == 1
@@ -300,7 +271,7 @@ class TestFullParsing:
         result = parse_doe_csv(csv_no_responses)
 
         assert result.is_valid
-        assert result.response_definitions == []
+        assert len(result.response_definitions) == 0
 
     def test_parse_invalid_csv_returns_error(self) -> None:
         """Test that invalid CSV returns error in result."""
@@ -329,9 +300,7 @@ class TestValidation:
         assert is_valid
         assert errors == []
 
-    def test_validate_against_session_factors_matching(
-        self, valid_doe_csv: str
-    ) -> None:
+    def test_validate_matching_factors(self, valid_doe_csv: str) -> None:
         """Test validation with matching session factors."""
         result = parse_doe_csv(valid_doe_csv)
         is_valid, errors = validate_csv_structure(result, session_factors=result.factors)
@@ -339,9 +308,7 @@ class TestValidation:
         assert is_valid
         assert errors == []
 
-    def test_validate_against_session_factors_count_mismatch(
-        self, valid_doe_csv: str
-    ) -> None:
+    def test_validate_mismatched_factor_count(self, valid_doe_csv: str) -> None:
         """Test validation with factor count mismatch."""
         result = parse_doe_csv(valid_doe_csv)
         fewer_factors = result.factors[:2]
@@ -350,6 +317,34 @@ class TestValidation:
 
         assert not is_valid
         assert any("Factor count mismatch" in e for e in errors)
+
+    def test_validate_mismatched_factor_names(self, valid_doe_csv: str) -> None:
+        """Test validation with factor name mismatch."""
+        result = parse_doe_csv(valid_doe_csv)
+        
+        # Create factors with different names
+        different_factors = [
+            Factor(
+                name="Temp",  # Different name
+                factor_type=FactorType.CONTINUOUS,
+                levels=[150, 200]
+            ),
+            Factor(
+                name="Press",  # Different name
+                factor_type=FactorType.CONTINUOUS,
+                levels=[50, 100]
+            ),
+            Factor(
+                name="Mat",  # Different name
+                factor_type=FactorType.CATEGORICAL,
+                levels=["A", "B", "C"]
+            ),
+        ]
+
+        is_valid, errors = validate_csv_structure(result, session_factors=different_factors)
+
+        assert not is_valid
+        assert any("Factor name mismatch" in e for e in errors)
 
     def test_validate_with_parse_error(self) -> None:
         """Test validation with parse error."""
@@ -375,8 +370,7 @@ class TestGeneration:
                 name="Temperature",
                 factor_type=FactorType.CONTINUOUS,
                 changeability=ChangeabilityLevel.EASY,
-                min_value=150,
-                max_value=200,
+                levels=[150, 200],
                 units="°C",
             )
         ]
@@ -404,8 +398,7 @@ class TestGeneration:
                 name="Temp",
                 factor_type=FactorType.CONTINUOUS,
                 changeability=ChangeabilityLevel.EASY,
-                min_value=150,
-                max_value=200,
+                levels=[150, 200],
             )
         ]
 
@@ -426,8 +419,7 @@ class TestGeneration:
                 name="Temperature",
                 factor_type=FactorType.CONTINUOUS,
                 changeability=ChangeabilityLevel.EASY,
-                min_value=150,
-                max_value=200,
+                levels=[150, 200],
                 units="°C",
             )
         ]

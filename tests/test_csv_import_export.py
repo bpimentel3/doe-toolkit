@@ -36,17 +36,17 @@ def simple_factors() -> list:
             name='Temperature',
             factor_type=FactorType.CONTINUOUS,
             changeability=ChangeabilityLevel.EASY,
-            min_value=150,
-            max_value=200,
+            levels=[150.0, 200.0],
             units='°C',
+            _validate_on_init=False,
         ),
         Factor(
             name='Pressure',
             factor_type=FactorType.CONTINUOUS,
             changeability=ChangeabilityLevel.EASY,
-            min_value=50,
-            max_value=100,
+            levels=[50.0, 100.0],
             units='psi',
+            _validate_on_init=False,
         ),
     ]
 
@@ -150,7 +150,7 @@ class TestRoundTrip:
         
         assert result.is_valid
         assert len(result.factors) == 2
-        assert result.response_definitions == []
+        assert len(result.response_definitions) == 0
         assert len(result.design_data) == 4
 
     def test_roundtrip_preserves_factor_metadata(
@@ -229,9 +229,7 @@ class TestMultipleResponses:
 class TestFactorTypes:
     """Tests for different factor types in roundtrip."""
 
-    def test_discrete_factors_roundtrip(
-        self, simple_design: pd.DataFrame
-    ) -> None:
+    def test_discrete_factors_roundtrip(self) -> None:
         """Test discrete numeric factors in roundtrip."""
         
         factors = [
@@ -239,8 +237,9 @@ class TestFactorTypes:
                 name='RPM',
                 factor_type=FactorType.DISCRETE_NUMERIC,
                 changeability=ChangeabilityLevel.EASY,
-                discrete_values=[100.0, 150.0, 200.0],
+                levels=[100.0, 150.0, 200.0],
                 units='rpm',
+                _validate_on_init=False,
             )
         ]
         
@@ -250,11 +249,9 @@ class TestFactorTypes:
         result = parse_doe_csv(csv)
         
         assert result.factors[0].factor_type == FactorType.DISCRETE_NUMERIC
-        assert result.factors[0].discrete_values == [100.0, 150.0, 200.0]
+        assert result.factors[0].levels == [100.0, 150.0, 200.0]
 
-    def test_categorical_factors_roundtrip(
-        self, simple_design: pd.DataFrame
-    ) -> None:
+    def test_categorical_factors_roundtrip(self) -> None:
         """Test categorical factors in roundtrip."""
         
         factors = [
@@ -262,7 +259,8 @@ class TestFactorTypes:
                 name='Material',
                 factor_type=FactorType.CATEGORICAL,
                 changeability=ChangeabilityLevel.EASY,
-                categorical_levels=['A', 'B', 'C'],
+                levels=['A', 'B', 'C'],
+                _validate_on_init=False,
             )
         ]
         
@@ -272,7 +270,7 @@ class TestFactorTypes:
         result = parse_doe_csv(csv)
         
         assert result.factors[0].factor_type == FactorType.CATEGORICAL
-        assert result.factors[0].categorical_levels == ['A', 'B', 'C']
+        assert result.factors[0].levels == ['A', 'B', 'C']
 
     def test_mixed_factor_types(self) -> None:
         """Test mixed factor types in single design."""
@@ -282,20 +280,22 @@ class TestFactorTypes:
                 name='Temperature',
                 factor_type=FactorType.CONTINUOUS,
                 changeability=ChangeabilityLevel.EASY,
-                min_value=100,
-                max_value=200,
+                levels=[100.0, 200.0],
+                _validate_on_init=False,
             ),
             Factor(
                 name='RPM',
                 factor_type=FactorType.DISCRETE_NUMERIC,
                 changeability=ChangeabilityLevel.EASY,
-                discrete_values=[100.0, 200.0],
+                levels=[100.0, 200.0],
+                _validate_on_init=False,
             ),
             Factor(
                 name='Material',
                 factor_type=FactorType.CATEGORICAL,
                 changeability=ChangeabilityLevel.EASY,
-                categorical_levels=['A', 'B'],
+                levels=['A', 'B'],
+                _validate_on_init=False,
             ),
         ]
         
@@ -360,8 +360,8 @@ class TestValidation:
                 name='Temp',  # Wrong name
                 factor_type=simple_factors[0].factor_type,
                 changeability=simple_factors[0].changeability,
-                min_value=simple_factors[0].min_value,
-                max_value=simple_factors[0].max_value,
+                levels=simple_factors[0].levels,
+                _validate_on_init=False,
             ),
             simple_factors[1],
         ]
