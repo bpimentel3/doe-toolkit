@@ -1,13 +1,12 @@
 """
-Step 4: Import Experimental Results (Enhanced)
-
-FIXED VERSION - Properly handles CSV numeric type conversion
+Step 4: Import Experimental Results (with CSV Metadata Support)
 
 NEW FEATURES:
-- Accessible from home screen (no prerequisites)
-- Auto-detect and create factors from CSV
-- Flexible column mapping for mismatched names
-- Persistent data preview on page
+- Parse CSV with DOE-Toolkit metadata headers
+- Import response definitions from CSV
+- Compare factors with session (show mismatch dialog)
+- Three import paths: fresh session, active session, response-only
+- Graceful fallback for plain CSVs
 """
 import sys
 from pathlib import Path
@@ -29,6 +28,12 @@ from src.core.factors import (
     FactorType, 
     ChangeabilityLevel,
     sanitize_factor_name
+)
+from src.ui.utils.csv_parser import (
+    parse_doe_csv,
+    validate_csv_structure,
+    ParseResult,
+    CSVParseError
 )
 
 # Initialize state
@@ -58,671 +63,276 @@ if st.session_state.get('design') is not None and st.session_state.get('response
 
 st.divider()
 
-# Import mode selection
-st.subheader("Import Mode")
+# File upload
+st.subheader("📤 Upload Results CSV")
 
-import_mode = st.radio(
-    "How would you like to import data?",
-    [
-        "🆕 Upload new CSV (auto-detect factors)",
-        "📂 Upload CSV with existing factors",
-        "➕ Add responses to current design"
-    ],
-    help="Choose based on your workflow"
+uploaded_file = st.file_uploader(
+    "Choose CSV file (with or without DOE-Toolkit metadata)",
+    type=['csv'],
+    key='results_upload'
 )
 
-st.divider()
-
-# Mode 1: Auto-detect (new workflow start)
-if "auto-detect" in import_mode.lower():
-    st.subheader("🆕 Upload CSV - Auto-Detect Factors")
+if uploaded_file:
+    # Read file content
+    file_content = uploaded_file.getvalue().decode('utf-8')
     
-    st.markdown("""
-    Upload any DOE CSV file. The app will:
-    1. Automatically detect factor columns
-    2. Identify response columns
-    3. Create factor definitions for you
-    4. Allow you to adjust mappings if needed
-    """)
+    # Try to parse as DOE-Toolkit format
+    parse_result = parse_doe_csv(file_content)
     
-    uploaded_file = st.file_uploader(
-        "Upload Design + Results CSV",
-        type=['csv'],
-        key='auto_detect_upload'
-    )
-    
-    if uploaded_file:
-        try:
-            uploaded_df = pd.read_csv(uploaded_file)
+    if parse_result.is_valid:
+        st.success("✓ CSV with DOE-Toolkit metadata detected!")
+        
+        # Determine import path
+        has_session_design = st.session_state.get('design') is not None
+        has_session_factors = len(st.session_state.get('factors', [])) > 0
+        
+        # PATH 1: Fresh session (no design yet)
+        if not has_session_design:
+            st.info("📌 **Fresh Session Import** - Loading factors and design from CSV")
             
-            st.success(f"✓ CSV loaded: {len(uploaded_df)} rows, {len(uploaded_df.columns)} columns")
+            # Show factor summary
+            with st.expander("📋 Factors to Import", expanded=True):
+                st.write(f"**{len(parse_result.factors)} factors found:**")
+                for factor in parse_result.factors:
+                    if factor.factor_type == FactorType.CONTINUOUS:
+                        st.caption(f"• {factor.name}: continuous [{factor.min_value}, {factor.max_value}] {factor.units or ''}")
+                    elif factor.factor_type == FactorType.DISCRETE_NUMERIC:
+                        st.caption(f"• {factor.name}: discrete {factor.discrete_values} {factor.units or ''}")
+                    else:  # CATEGORICAL
+                        st.caption(f"• {factor.name}: categorical {factor.categorical_levels} {factor.units or ''}")
             
-            with st.expander("📋 Raw Data Preview", expanded=True):
-                st.dataframe(uploaded_df.head(10), use_container_width=True)
+            # Show response summary
+            if parse_result.response_definitions:
+                with st.expander("📊 Responses to Import", expanded=True):
+                    st.write(f"**{len(parse_result.response_definitions)} responses found:**")
+                    for resp in parse_result.response_definitions:
+                        units_str = f" ({resp['units']})" if resp['units'] else ""
+                        st.caption(f"• {resp['name']}{units_str}")
             
-            st.divider()
+            # Show design preview
+            with st.expander("🔍 Design Data Preview", expanded=True):
+                st.dataframe(parse_result.design_data.head(10), use_container_width=True)
             
-            # Auto-detect factor vs response columns
-            st.subheader("🔍 Column Detection")
-            
-            # Strategy: numeric columns with few unique values = likely factors
-            # Numeric columns with many unique values = likely responses
-            # Non-numeric columns = categorical factors
-            
-            detected_factors = {}
-            detected_responses = {}
-            metadata_cols = ['StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase']
-            
-            # ═══════════════════════════════════════════════════════════════
-            # FIX #1: DETECTION STAGE - Force numeric conversion early
-            # ═══════════════════════════════════════════════════════════════
-            for col in uploaded_df.columns:
-                if col in metadata_cols:
-                    continue  # Skip metadata
+            # Import button
+            if st.button("✅ Import Design + Factors + Responses", type="primary", use_container_width=True):
+                # Load into session
+                st.session_state['factors'] = parse_result.factors
+                st.session_state['design'] = parse_result.design_data
+                st.session_state['response_definitions'] = parse_result.response_definitions
+                st.session_state['design_metadata'] = parse_result.metadata
                 
-                col_data = uploaded_df[col]
+                # Extract responses from design data (columns not in factors or metadata)
+                factor_names = {f.name for f in parse_result.factors}
+                meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
+                response_names = {r['name'] for r in parse_result.response_definitions}
                 
-                # ★★★ CRITICAL FIX: Try to convert to numeric first ★★★
-                # pandas may read numeric columns as strings
-                is_numeric = False
-                try:
-                    numeric_col = pd.to_numeric(col_data, errors='coerce')
-                    if not numeric_col.isna().any():
-                        # Successfully converted all values without NaNs
-                        col_data = numeric_col
-                        is_numeric = True
-                except:
-                    is_numeric = False
+                responses = {}
+                for col in parse_result.design_data.columns:
+                    if col not in factor_names and col not in meta_cols and col in response_names:
+                        # Extract response data (skip empty values)
+                        col_data = parse_result.design_data[col]
+                        # Only add if has non-empty values
+                        if col_data.notna().any():
+                            responses[col] = col_data.values
                 
-                n_unique = col_data.nunique()
-                n_total = len(col_data)
-                
-                # Heuristics
-                if not is_numeric:
-                    # Non-numeric = categorical factor
-                    detected_factors[col] = {
-                        'type': FactorType.CATEGORICAL,
-                        'levels': sorted(col_data.unique().tolist()),
-                        'confidence': 'high'
-                    }
-                elif n_unique <= 10:  # Increased threshold from 5 to 10
-                    # Few unique values = likely factor
-                    unique_vals = sorted(col_data.unique())
-                    
-                    # Check if values look like coded levels (-1, 0, 1) or (-1, 1)
-                    if set(unique_vals).issubset({-1, -0.5, 0, 0.5, 1}):
-                        detected_factors[col] = {
-                            'type': FactorType.CONTINUOUS,
-                            'levels': [float(unique_vals[0]), float(unique_vals[-1])],
-                            'confidence': 'high',
-                            'note': 'Detected as coded continuous (-1 to +1)'
-                        }
-                    # Check if values are evenly spaced (suggests continuous)
-                    elif n_unique >= 3:
-                        diffs = np.diff(unique_vals)
-                        is_evenly_spaced = np.allclose(diffs, diffs[0], rtol=0.01)
-                        
-                        if is_evenly_spaced and n_unique >= 5:
-                            # Evenly spaced with 5+ levels → likely continuous
-                            detected_factors[col] = {
-                                'type': FactorType.CONTINUOUS,
-                                'levels': [float(unique_vals[0]), float(unique_vals[-1])],
-                                'confidence': 'medium',
-                                'note': f'Evenly spaced {n_unique} levels - assumed continuous'
-                            }
-                        else:
-                            # Not evenly spaced or fewer levels → discrete numeric
-                            detected_factors[col] = {
-                                'type': FactorType.DISCRETE_NUMERIC,
-                                'levels': [float(v) for v in unique_vals],
-                                'confidence': 'medium',
-                                'note': f'{n_unique} discrete levels'
-                            }
-                    else:
-                        # 2 levels only - could be either, default to discrete
-                        detected_factors[col] = {
-                            'type': FactorType.DISCRETE_NUMERIC,
-                            'levels': [float(v) for v in unique_vals],
-                            'confidence': 'low',
-                            'note': 'Only 2 levels - review if should be continuous'
-                        }
-                else:
-                    # Many unique values = likely response
-                    detected_responses[col] = {
-                        'mean': float(col_data.mean()),
-                        'std': float(col_data.std()),
-                        'min': float(col_data.min()),
-                        'max': float(col_data.max())
-                    }
-            
-            # Display detection results
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 🔧 Detected Factors")
-                if detected_factors:
-                    factor_summary = []
-                    for name, info in detected_factors.items():
-                        if info['type'] == FactorType.CONTINUOUS:
-                            levels_str = f"[{info['levels'][0]:.2f}, {info['levels'][1]:.2f}]"
-                        else:
-                            levels_str = f"{len(info['levels'])} levels"
-                        
-                        factor_summary.append({
-                            'Column': name,
-                            'Type': info['type'].value.replace('_', ' ').title(),
-                            'Levels': levels_str,
-                            'Confidence': info['confidence'].title()
-                        })
-                    
-                    st.dataframe(pd.DataFrame(factor_summary), use_container_width=True, hide_index=True)
-                else:
-                    st.warning("No factors detected. All columns appear to be responses.")
-            
-            with col2:
-                st.markdown("### 📊 Detected Responses")
-                if detected_responses:
-                    response_summary = []
-                    for name, stats in detected_responses.items():
-                        response_summary.append({
-                            'Column': name,
-                            'Mean': f"{stats['mean']:.2f}",
-                            'Std Dev': f"{stats['std']:.2f}",
-                            'Range': f"[{stats['min']:.2f}, {stats['max']:.2f}]"
-                        })
-                    
-                    st.dataframe(pd.DataFrame(response_summary), use_container_width=True, hide_index=True)
-                else:
-                    st.warning("No responses detected. All columns appear to be factors.")
-            
-            st.divider()
-            
-            # Allow user to adjust mappings
-            st.subheader("✏️ Adjust Mappings (Optional)")
-            
-            with st.form("adjust_mappings"):
-                st.markdown("**Reassign columns if detection is incorrect:**")
-                
-                all_cols = [c for c in uploaded_df.columns if c not in metadata_cols]
-                
-                # Multi-select for factors
-                factor_cols = st.multiselect(
-                    "Factor Columns",
-                    all_cols,
-                    default=list(detected_factors.keys()),
-                    help="Columns that represent experimental factors"
-                )
-                
-                # Multi-select for responses
-                response_cols = st.multiselect(
-                    "Response Columns",
-                    all_cols,
-                    default=list(detected_responses.keys()),
-                    help="Columns that represent measured outcomes"
-                )
-                
-                # Validation
-                overlap = set(factor_cols) & set(response_cols)
-                if overlap:
-                    st.error(f"⚠️ Columns cannot be both factor and response: {overlap}")
-                
-                submitted = st.form_submit_button("✓ Confirm Mappings", type="primary")
-                
-                # ═══════════════════════════════════════════════════════════════
-                # FIX #2: FACTOR CREATION STAGE - Ensure numeric types
-                # ═══════════════════════════════════════════════════════════════
-                if submitted and not overlap:
-                    # Create factors from detected/adjusted columns
-                    factors = []
-                    
-                    for col in factor_cols:
-                        # Sanitize name
-                        clean_name, was_modified = sanitize_factor_name(col)
-                        
-                        # Determine type and levels
-                        if col in detected_factors:
-                            info = detected_factors[col]
-                            factor_type = info['type']
-                            levels = info['levels']
-                            
-                            # ★★★ CRITICAL FIX: Ensure numeric types are properly converted ★★★
-                            # Even though we converted earlier, double-check here
-                            if factor_type in [FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC]:
-                                try:
-                                    levels = [float(x) for x in levels]
-                                except (ValueError, TypeError) as e:
-                                    st.error(f"Factor '{col}': Cannot convert levels to numeric: {e}")
-                                    st.stop()
-                        
-                        else:
-                            # User added this column manually - infer type
-                            col_data = uploaded_df[col]
-                            
-                            # ★★★ CRITICAL FIX: Try to convert to numeric first ★★★
-                            try:
-                                numeric_data = pd.to_numeric(col_data, errors='coerce')
-                                if not numeric_data.isna().any():
-                                    # Successfully numeric - all values converted
-                                    unique_vals = sorted(numeric_data.unique())
-                                    if len(unique_vals) <= 5:
-                                        factor_type = FactorType.DISCRETE_NUMERIC
-                                        levels = [float(x) for x in unique_vals]
-                                    else:
-                                        factor_type = FactorType.CONTINUOUS
-                                        levels = [float(numeric_data.min()), float(numeric_data.max())]
-                                else:
-                                    # Has NaNs after conversion - treat as categorical
-                                    factor_type = FactorType.CATEGORICAL
-                                    levels = sorted(col_data.unique().tolist())
-                            except:
-                                # Conversion failed - categorical
-                                factor_type = FactorType.CATEGORICAL
-                                levels = sorted(col_data.unique().tolist())
-                        
-                        try:
-                            factor = Factor(
-                                name=clean_name,
-                                factor_type=factor_type,
-                                changeability=ChangeabilityLevel.EASY,
-                                levels=levels
-                            )
-                            factors.append(factor)
-                            
-                            if was_modified:
-                                st.info(f"Factor '{col}' renamed to '{clean_name}' for compatibility")
-                        
-                        except ValueError as e:
-                            st.error(f"Failed to create factor '{col}': {e}")
-                            st.stop()
-                    
-                    # Extract design and responses
-                    design_df = uploaded_df[[f.name for f in factors]].copy()
-                    
-                    # Add metadata columns if present
-                    for meta_col in metadata_cols:
-                        if meta_col in uploaded_df.columns:
-                            design_df[meta_col] = uploaded_df[meta_col]
-                    
-                    # Add StdOrder/RunOrder if missing
-                    if 'StdOrder' not in design_df.columns:
-                        design_df.insert(0, 'StdOrder', range(1, len(design_df) + 1))
-                    if 'RunOrder' not in design_df.columns:
-                        design_df.insert(1, 'RunOrder', range(1, len(design_df) + 1))
-                    
-                    # Extract responses
-                    responses = {}
-                    for col in response_cols:
-                        try:
-                            responses[col] = pd.to_numeric(uploaded_df[col], errors='coerce').values
-                            
-                            n_missing = np.isnan(responses[col]).sum()
-                            if n_missing > 0:
-                                st.warning(f"Response '{col}' has {n_missing} missing value(s)")
-                        except:
-                            st.error(f"Response '{col}' could not be converted to numeric")
-                            st.stop()
-                    
-                    # Save to session state
-                    st.session_state['factors'] = factors
-                    st.session_state['design'] = design_df
+                if responses:
                     st.session_state['responses'] = responses
-                    st.session_state['response_names'] = list(responses.keys())
-                    st.session_state['design_metadata'] = {
-                        'design_type': 'imported',
-                        'import_mode': 'auto_detect',
-                        'is_split_plot': 'WholePlot' in design_df.columns,
-                        'has_blocking': 'Block' in design_df.columns
-                    }
+                    st.success(f"✓ Imported {len(parse_result.factors)} factors, {len(responses)} responses")
+                else:
+                    st.warning("⚠️ No response data found in CSV (empty columns)")
+                    st.info("You can add response data in Step 5 (Analyze)")
+                
+                st.rerun()
+        
+        # PATH 2: Active session with factors
+        elif has_session_factors:
+            st.info("📌 **Factor Comparison** - Checking CSV factors against session factors")
+            
+            # Validate factor compatibility
+            is_valid, errors = validate_csv_structure(parse_result, st.session_state.get('factors'))
+            
+            if is_valid:
+                st.success("✓ Factors match! Proceeding with import...")
+                
+                # Show design preview
+                with st.expander("🔍 Design + Response Data Preview", expanded=True):
+                    st.dataframe(parse_result.design_data.head(10), use_container_width=True)
+                
+                # Check for response mismatch
+                session_responses = set(st.session_state.get('responses', {}).keys())
+                csv_responses = {r['name'] for r in parse_result.response_definitions}
+                
+                if csv_responses and session_responses and csv_responses != session_responses:
+                    st.warning(f"⚠️ Response names differ:")
+                    st.caption(f"Session has: {session_responses}")
+                    st.caption(f"CSV has: {csv_responses}")
+                
+                # Import button
+                if st.button("✅ Import Results (Keep Factors)", type="primary", use_container_width=True):
+                    # Extract responses
+                    factor_names = {f.name for f in st.session_state['factors']}
+                    meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
                     
-                    st.success(
-                        f"✅ Imported successfully!\n\n"
-                        f"- {len(factors)} factor(s) created\n"
-                        f"- {len(design_df)} run(s)\n"
-                        f"- {len(responses)} response(s)"
-                    )
+                    responses = {}
+                    for col in parse_result.design_data.columns:
+                        if col not in factor_names and col not in meta_cols:
+                            col_data = parse_result.design_data[col]
+                            if col_data.notna().any():
+                                responses[col] = col_data.values
                     
-                    invalidate_downstream_state(from_step=4)
+                    if responses:
+                        st.session_state['responses'] = responses
+                        st.session_state['response_definitions'] = parse_result.response_definitions
+                        st.success(f"✓ Imported {len(responses)} response(s)")
+                    else:
+                        st.warning("No response data in CSV")
+                    
                     st.rerun()
-        
-        except Exception as e:
-            st.error(f"Failed to load CSV: {e}")
-            st.exception(e)
-
-# Mode 2: Upload with existing factors (flexible mapping)
-elif "existing factors" in import_mode.lower():
-    st.subheader("📂 Upload CSV - Map to Existing Factors")
-    
-    # Check if factors exist
-    if not st.session_state.get('factors'):
-        st.warning(
-            "⚠️ No factors defined yet. Either:\n"
-            "1. Define factors in Step 1 first, OR\n"
-            "2. Use 'Auto-detect' mode above"
-        )
-        
-        if st.button("→ Go to Step 1: Define Factors"):
-            st.session_state['current_step'] = 1
-            st.switch_page("pages/1_define_factors.py")
-        
-        st.stop()
-    
-    factors = st.session_state['factors']
-    
-    st.markdown(f"""
-    You have **{len(factors)} factors** defined. Upload a CSV and we'll help you map columns.
-    
-    **Defined factors:** {', '.join([f.name for f in factors])}
-    """)
-    
-    uploaded_file = st.file_uploader(
-        "Upload CSV with Design + Results",
-        type=['csv'],
-        key='flexible_upload'
-    )
-    
-    if uploaded_file:
-        try:
-            uploaded_df = pd.read_csv(uploaded_file)
             
-            st.success(f"✓ CSV loaded: {len(uploaded_df)} rows, {len(uploaded_df.columns)} columns")
-            
-            with st.expander("📋 CSV Preview"):
-                st.dataframe(uploaded_df.head(10), use_container_width=True)
-            
-            st.divider()
-            
-            # Column mapping interface
-            st.subheader("🔗 Map CSV Columns to Factors")
-            
-            csv_cols = uploaded_df.columns.tolist()
-            metadata_cols = ['StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase']
-            
-            # Auto-suggest mappings based on name similarity
-            def suggest_mapping(factor_name: str, csv_columns: List[str]) -> Optional[str]:
-                """Suggest best matching CSV column for a factor."""
-                factor_lower = factor_name.lower()
+            else:
+                # MISMATCH DIALOG
+                st.error("❌ Factor mismatch detected!")
                 
-                # Exact match
-                if factor_name in csv_columns:
-                    return factor_name
+                with st.expander("🔍 Comparison Details", expanded=True):
+                    for error in errors:
+                        st.error(f"• {error}")
                 
-                # Case-insensitive match
-                for col in csv_columns:
-                    if col.lower() == factor_lower:
-                        return col
+                # Show factor comparison table
+                st.markdown("**Factor Comparison:**")
+                comparison_data = []
                 
-                # Partial match
-                for col in csv_columns:
-                    if factor_lower in col.lower() or col.lower() in factor_lower:
-                        return col
+                for i, csv_factor in enumerate(parse_result.factors):
+                    if i < len(st.session_state['factors']):
+                        session_factor = st.session_state['factors'][i]
+                        comparison_data.append({
+                            'CSV Factor': csv_factor.name,
+                            'Session Factor': session_factor.name,
+                            'Match': '✓' if csv_factor.name == session_factor.name else '✗'
+                        })
+                    else:
+                        comparison_data.append({
+                            'CSV Factor': csv_factor.name,
+                            'Session Factor': '—',
+                            'Match': '✗'
+                        })
                 
-                return None
-            
-            # Build mapping form
-            with st.form("column_mapping"):
-                st.markdown("**Map each factor to a CSV column:**")
-                
-                column_map = {}
-                
-                for factor in factors:
-                    suggested = suggest_mapping(factor.name, csv_cols)
-                    
-                    col1, col2, col3 = st.columns([2, 1, 2])
-                    
-                    with col1:
-                        st.markdown(f"**{factor.name}**")
-                        st.caption(f"{factor.factor_type.value.replace('_', ' ').title()}")
-                    
-                    with col2:
-                        st.markdown("→")
-                    
-                    with col3:
-                        mapped_col = st.selectbox(
-                            f"CSV Column",
-                            options=['(unmapped)'] + csv_cols,
-                            index=csv_cols.index(suggested) + 1 if suggested else 0,
-                            key=f'map_{factor.name}',
-                            label_visibility='collapsed'
-                        )
-                        
-                        if mapped_col != '(unmapped)':
-                            column_map[factor.name] = mapped_col
+                st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
                 
                 st.divider()
                 
-                st.markdown("**Response columns** (all others will be treated as responses):")
+                # User chooses resolution
+                st.subheader("How would you like to proceed?")
                 
-                # Calculate which columns are unmapped
-                mapped_cols = set(column_map.values())
-                potential_response_cols = [c for c in csv_cols 
-                                          if c not in mapped_cols 
-                                          and c not in metadata_cols]
-                
-                response_cols = st.multiselect(
-                    "Select Response Columns",
-                    potential_response_cols,
-                    default=potential_response_cols,
-                    help="Measured outcomes from experiments"
+                resolution = st.radio(
+                    "Resolution strategy:",
+                    [
+                        "Use CSV factors (replace session)",
+                        "Use session factors (skip CSV factors)",
+                        "Cancel import"
+                    ],
+                    label_visibility="collapsed"
                 )
                 
-                submitted = st.form_submit_button("✓ Import with Mapping", type="primary")
-                
-                if submitted:
-                    # Validate all factors mapped
-                    unmapped_factors = [f.name for f in factors if f.name not in column_map]
-                    
-                    if unmapped_factors:
-                        st.error(f"⚠️ Unmapped factors: {', '.join(unmapped_factors)}")
-                        st.stop()
-                    
-                    if not response_cols:
-                        st.error("⚠️ At least one response column required")
-                        st.stop()
-                    
-                    # Build design DataFrame with correct factor names
-                    design_df = pd.DataFrame()
-                    
-                    for factor in factors:
-                        csv_col = column_map[factor.name]
-                        design_df[factor.name] = uploaded_df[csv_col]
-                    
-                    # Add metadata columns if present
-                    for meta_col in metadata_cols:
-                        if meta_col in uploaded_df.columns:
-                            design_df[meta_col] = uploaded_df[meta_col]
-                    
-                    # Add StdOrder/RunOrder if missing
-                    if 'StdOrder' not in design_df.columns:
-                        design_df.insert(0, 'StdOrder', range(1, len(design_df) + 1))
-                    if 'RunOrder' not in design_df.columns:
-                        design_df.insert(1, 'RunOrder', range(1, len(design_df) + 1))
-                    
-                    # Extract responses
-                    responses = {}
-                    for col in response_cols:
-                        try:
-                            responses[col] = pd.to_numeric(uploaded_df[col], errors='coerce').values
-                            
-                            n_missing = np.isnan(responses[col]).sum()
-                            if n_missing > 0:
-                                st.warning(f"Response '{col}' has {n_missing} missing value(s)")
-                        except:
-                            st.error(f"Response '{col}' could not be converted to numeric")
-                            st.stop()
-                    
-                    # Validate factor values against definitions
-                    validation_warnings = []
-                    for factor in factors:
-                        col_data = design_df[factor.name]
+                if resolution == "Use CSV factors (replace session)":
+                    if st.button("✅ Replace Factors & Import", type="primary", use_container_width=True):
+                        st.session_state['factors'] = parse_result.factors
+                        st.session_state['design'] = parse_result.design_data
                         
-                        if factor.is_continuous():
-                            if col_data.min() < factor.min_value or col_data.max() > factor.max_value:
-                                validation_warnings.append(
-                                    f"⚠️ '{factor.name}': values outside range [{factor.min_value}, {factor.max_value}]"
-                                )
-                        elif factor.is_categorical():
-                            invalid_vals = set(col_data.unique()) - set(factor.levels)
-                            if invalid_vals:
-                                validation_warnings.append(
-                                    f"⚠️ '{factor.name}': unexpected values: {invalid_vals}"
-                                )
-                    
-                    if validation_warnings:
-                        st.warning("**Validation Warnings:**")
-                        for warning in validation_warnings:
-                            st.warning(warning)
-                        st.info("Import will proceed, but check your data")
-                    
-                    # Save to session state
-                    st.session_state['design'] = design_df
-                    st.session_state['responses'] = responses
-                    st.session_state['response_names'] = list(responses.keys())
-                    st.session_state['design_metadata'] = {
-                        'design_type': 'imported',
-                        'import_mode': 'mapped',
-                        'column_mapping': column_map,
-                        'is_split_plot': 'WholePlot' in design_df.columns,
-                        'has_blocking': 'Block' in design_df.columns
-                    }
-                    
-                    st.success(
-                        f"✅ Imported successfully!\n\n"
-                        f"- {len(design_df)} run(s)\n"
-                        f"- {len(responses)} response(s)\n"
-                        f"- Column mapping applied"
-                    )
-                    
-                    invalidate_downstream_state(from_step=4)
-                    st.rerun()
+                        # Extract responses
+                        factor_names = {f.name for f in parse_result.factors}
+                        meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
+                        
+                        responses = {}
+                        for col in parse_result.design_data.columns:
+                            if col not in factor_names and col not in meta_cols:
+                                col_data = parse_result.design_data[col]
+                                if col_data.notna().any():
+                                    responses[col] = col_data.values
+                        
+                        if responses:
+                            st.session_state['responses'] = responses
+                            st.session_state['response_definitions'] = parse_result.response_definitions
+                            st.success(f"✓ Replaced factors and imported {len(responses)} response(s)")
+                        
+                        st.rerun()
+                
+                elif resolution == "Use session factors (skip CSV factors)":
+                    if st.button("✅ Import Responses Only", type="primary", use_container_width=True):
+                        # Extract responses only
+                        factor_names = {f.name for f in st.session_state['factors']}
+                        meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
+                        
+                        responses = {}
+                        for col in parse_result.design_data.columns:
+                            if col not in factor_names and col not in meta_cols:
+                                col_data = parse_result.design_data[col]
+                                if col_data.notna().any():
+                                    responses[col] = col_data.values
+                        
+                        if responses:
+                            st.session_state['responses'] = responses
+                            st.session_state['response_definitions'] = parse_result.response_definitions
+                            st.success(f"✓ Imported {len(responses)} response(s) (factors unchanged)")
+                        else:
+                            st.warning("No response data to import")
+                        
+                        st.rerun()
+    
+    else:
+        # FALLBACK: Plain CSV without metadata
+        st.warning("⚠️ CSV format not recognized as DOE-Toolkit metadata format")
+        st.info("Attempting to parse as plain CSV...")
         
-        except Exception as e:
-            st.error(f"Failed to load CSV: {e}")
-            st.exception(e)
-
-# Mode 3: Add responses to existing design (original workflow)
-else:
-    st.subheader("➕ Add Responses to Current Design")
-    
-    if not st.session_state.get('design') is not None:
-        st.warning("⚠️ No design loaded. Please generate a design first or use one of the import modes above.")
-        st.stop()
-    
-    design = st.session_state['design']
-    factors = st.session_state['factors']
-    
-    st.markdown(f"Current design: **{len(design)} runs**, **{len(factors)} factors**")
-    
-    with st.expander("📋 Current Design Preview"):
-        st.dataframe(design.head(10), use_container_width=True)
-    
-    # Download template
-    st.download_button(
-        "📥 Download Results Template",
-        data=design.to_csv(index=False),
-        file_name="results_template.csv",
-        mime="text/csv",
-        help="Pre-filled with design, just add response column(s)"
-    )
-    
-    st.divider()
-    
-    uploaded_file = st.file_uploader(
-        "Upload CSV with Results",
-        type=['csv'],
-        help="Can be: (1) full design+results, or (2) responses only"
-    )
-    
-    if uploaded_file:
         try:
-            uploaded_df = pd.read_csv(uploaded_file)
+            # Try basic parsing
+            csv_df = pd.read_csv(uploaded_file)
             
-            st.dataframe(uploaded_df.head(10), use_container_width=True)
+            st.success(f"✓ Plain CSV loaded: {len(csv_df)} rows, {len(csv_df.columns)} columns")
             
-            # Detect upload type
-            factor_names = [f.name for f in factors]
-            has_factors = all(fname in uploaded_df.columns for fname in factor_names)
+            with st.expander("📋 Data Preview", expanded=True):
+                st.dataframe(csv_df.head(10), use_container_width=True)
             
-            if has_factors:
-                st.info("✓ Detected full design + results CSV")
+            # For plain CSV, guide user through mapping
+            st.subheader("Map Columns to Responses")
+            
+            factor_cols = set(st.session_state.get('factor_names', []))
+            meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
+            potential_response_cols = [c for c in csv_df.columns if c not in factor_cols and c not in meta_cols]
+            
+            if potential_response_cols:
+                st.write(f"**{len(potential_response_cols)} potential response column(s) detected:**")
                 
-                # Validate row count
-                if len(uploaded_df) != len(design):
-                    st.error(f"Row count mismatch: Expected {len(design)}, got {len(uploaded_df)}")
-                    st.stop()
+                responses = {}
+                for col in potential_response_cols:
+                    # Check if numeric
+                    if pd.api.types.is_numeric_dtype(csv_df[col]):
+                        st.caption(f"✓ {col} (numeric)")
+                        responses[col] = csv_df[col].values
+                    else:
+                        st.caption(f"⚠️ {col} (non-numeric, skipping)")
                 
-                # Identify response columns
-                design_cols = set(design.columns)
-                uploaded_cols = set(uploaded_df.columns)
-                response_cols = list(uploaded_cols - design_cols)
-                
-                if not response_cols:
-                    st.error("No new response columns found")
-                    st.stop()
-                
-                st.success(f"Found {len(response_cols)} response(s): {', '.join(response_cols)}")
+                if responses and st.button("✅ Import as Responses", type="primary", use_container_width=True):
+                    st.session_state['responses'] = responses
+                    st.success(f"✓ Imported {len(responses)} response(s)")
+                    st.rerun()
             
             else:
-                st.info("Detected responses-only CSV")
-                
-                if len(uploaded_df) != len(design):
-                    st.error(f"Row count mismatch: Expected {len(design)}, got {len(uploaded_df)}")
-                    st.stop()
-                
-                response_cols = list(uploaded_df.columns)
-                st.success(f"Found {len(response_cols)} response(s): {', '.join(response_cols)}")
-            
-            # Extract responses
-            responses = {}
-            for col in response_cols:
-                try:
-                    responses[col] = pd.to_numeric(uploaded_df[col], errors='coerce').values
-                    
-                    n_missing = np.isnan(responses[col]).sum()
-                    if n_missing > 0:
-                        st.warning(f"'{col}' has {n_missing} missing value(s)")
-                except:
-                    st.error(f"'{col}' could not be converted to numeric")
-                    st.stop()
-            
-            # Show statistics
-            stats_data = []
-            for name, data in responses.items():
-                stats_data.append({
-                    'Response': name,
-                    'Count': len(data),
-                    'Missing': np.isnan(data).sum(),
-                    'Mean': np.nanmean(data),
-                    'Std Dev': np.nanstd(data),
-                    'Min': np.nanmin(data),
-                    'Max': np.nanmax(data)
-                })
-            
-            st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
-            
-            if st.button("✓ Import Responses", type="primary", use_container_width=True):
-                st.session_state['responses'] = responses
-                st.session_state['response_names'] = list(responses.keys())
-                
-                st.success(f"✅ Imported {len(responses)} response(s)!")
-                
-                invalidate_downstream_state(from_step=4)
-                st.rerun()
+                st.warning("No identifiable response columns found")
         
         except Exception as e:
-            st.error(f"Failed to read CSV: {e}")
-            st.exception(e)
+            st.error(f"Failed to parse CSV: {e}")
 
 # Navigation
 st.divider()
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    if st.button("← Back to Home", use_container_width=True):
-        st.switch_page("app.py")
+    if st.button("← Back to Design", use_container_width=True):
+        st.switch_page("pages/3_preview_design.py")
 
-with col2:
+with col3:
     if st.session_state.get('responses'):
-        if st.button("Analyze →", type="primary", use_container_width=True):
+        if st.button("Analyze Results →", type="primary", use_container_width=True):
             st.session_state['current_step'] = 5
             st.switch_page("pages/5_analyze.py")
