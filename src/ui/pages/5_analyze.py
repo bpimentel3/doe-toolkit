@@ -740,57 +740,542 @@ with tab2:
         st.info("No effects to plot (intercept-only model)")
 
 with tab3:
-    st.info("📋 **Design Diagnostics** - Will be implemented in Session 11")
+    st.subheader("📋 Design Diagnostics")
     
-    st.markdown("**Planned Features:**")
-    st.markdown("""
-    - **Alias Structure**: Shows confounding patterns in fractional designs
-    - **VIF (Variance Inflation Factors)**: Detects multicollinearity (VIF > 10 is concerning)
-    - **Prediction Variance Map**: Visualizes prediction precision across design space
-    - **Design Efficiencies**: D-efficiency, A-efficiency, G-efficiency metrics
-    - **Variance vs Design Space**: Shows how prediction variance changes across factor space
-    """)
+    # Get diagnostics from session state if available
+    if st.session_state.get('diagnostics_summary') and st.session_state.get('quality_report'):
+        summary = st.session_state['diagnostics_summary']
+        report = st.session_state['quality_report']
+        
+        # Get diagnostics for current response
+        if selected_response in summary.response_diagnostics:
+            diag = summary.response_diagnostics[selected_response]
+            
+            # Metrics overview
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("R²", f"{diag.r_squared:.3f}")
+            with col2:
+                st.metric("Adj R²", f"{diag.adj_r_squared:.3f}")
+            with col3:
+                st.metric("RMSE", f"{diag.rmse:.2f}")
+            with col4:
+                grade = report.response_quality[selected_response].overall_grade
+                grade_icon = {'Excellent': '🌟', 'Good': '✅', 'Fair': '⚡', 
+                             'Poor': '⚠️', 'Inadequate': '❌'}.get(grade, '❓')
+                st.metric("Grade", f"{grade_icon} {grade}")
+            
+            st.divider()
+            
+            # Variance Inflation Factors
+            st.markdown("### Variance Inflation Factors (VIF)")
+            st.caption("VIF measures multicollinearity. VIF > 10 indicates problematic collinearity.")
+            
+            if diag.vif_values:
+                vif_data = []
+                for term, vif in sorted(diag.vif_values.items(), 
+                                       key=lambda x: x[1] if not pd.isna(x[1]) and not np.isinf(x[1]) else -1, 
+                                       reverse=True):
+                    if pd.isna(vif) or np.isinf(vif):
+                        vif_str = "∞"
+                        status = "⚠️ Singular"
+                    elif vif > 10:
+                        vif_str = f"{vif:.2f}"
+                        status = "❌ High"
+                    elif vif > 5:
+                        vif_str = f"{vif:.2f}"
+                        status = "⚡ Moderate"
+                    else:
+                        vif_str = f"{vif:.2f}"
+                        status = "✅ Good"
+                    
+                    vif_data.append({
+                        'Term': format_term_for_display(term),
+                        'VIF': vif_str,
+                        'Status': status
+                    })
+                
+                if vif_data:
+                    # Display as standard dataframe
+                    vif_df = pd.DataFrame(vif_data)
+                    st.dataframe(
+                        vif_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Add interpretation
+                    high_vif = [row['Term'] for row in vif_data if '❌' in row['Status'] or '⚠️' in row['Status']]
+                    if high_vif:
+                        st.warning(
+                            f"**High collinearity detected in:** {', '.join(high_vif)}\n\n"
+                            "These terms are highly correlated with other predictors. "
+                            "Consider removing redundant terms or adding orthogonalizing runs."
+                        )
+                else:
+                    st.info("No VIF values computed (intercept-only model)")
+            else:
+                st.info("VIF not available (may be saturated design)")
+            
+            st.divider()
+            
+            # Alias Structure (for fractional designs)
+            if diag.resolution is not None:
+                st.markdown("### Alias Structure")
+                st.caption(f"Design Resolution: **{diag.resolution}**")
+                
+                if diag.aliased_effects:
+                    st.markdown("**Confounding Patterns:**")
+                    
+                    # Group by aliasing severity
+                    critical_aliases = []
+                    other_aliases = []
+                    
+                    for effect, aliases in diag.aliased_effects.items():
+                        if aliases:
+                            alias_str = f"**{effect}** = {' = '.join(aliases)}"
+                            
+                            # Check if main effect aliased with 2FI (critical)
+                            if len(effect) == 1 and any(len(a) == 2 for a in aliases):
+                                critical_aliases.append(alias_str)
+                            else:
+                                other_aliases.append(alias_str)
+                    
+                    if critical_aliases:
+                        st.error("**Critical Confounding (Main effects with 2FI):**")
+                        for alias in critical_aliases:
+                            st.markdown(f"- {alias}")
+                    
+                    if other_aliases:
+                        with st.expander("View Other Confounding Patterns"):
+                            for alias in other_aliases:
+                                st.markdown(f"- {alias}")
+                    
+                    if diag.resolution <= 3:
+                        st.warning(
+                            f"⚠️ Resolution {diag.resolution} design: Main effects are aliased with "
+                            "2-factor interactions. Consider foldover to increase resolution."
+                        )
+                else:
+                    st.success("✅ No critical aliasing detected")
+            
+            st.divider()
+            
+            # Prediction Variance
+            if diag.prediction_variance_stats:
+                st.markdown("### Prediction Variance")
+                st.caption("Lower variance = more precise predictions. High max/mean ratio indicates non-uniform precision.")
+                
+                stats_dict = diag.prediction_variance_stats
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Min", f"{stats_dict.get('min', 0):.3f}")
+                with col2:
+                    st.metric("Mean", f"{stats_dict.get('mean', 0):.3f}")
+                with col3:
+                    st.metric("Max", f"{stats_dict.get('max', 0):.3f}")
+                with col4:
+                    max_val = stats_dict.get('max', 0)
+                    mean_val = stats_dict.get('mean', 1)
+                    ratio = max_val / mean_val if mean_val > 0 else 0
+                    st.metric("Max/Mean", f"{ratio:.2f}")
+                
+                if ratio > 3:
+                    st.warning(
+                        f"⚠️ High variance ratio ({ratio:.1f}x) indicates non-uniform precision. "
+                        "Some regions of the design space have much higher prediction variance."
+                    )
+                else:
+                    st.success("✅ Prediction variance is reasonably uniform")
+            
+            st.divider()
+            
+            # Effect Significance Summary
+            st.markdown("### Effect Significance")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if diag.significant_effects:
+                    st.success(f"**Significant (p < 0.05):** {len(diag.significant_effects)}")
+                    for effect in diag.significant_effects:
+                        st.markdown(f"- {format_term_for_display(effect)}")
+                else:
+                    st.info("No significant effects detected")
+            
+            with col2:
+                if diag.marginally_significant:
+                    st.warning(f"**Marginal (0.05 < p < 0.10):** {len(diag.marginally_significant)}")
+                    for effect in diag.marginally_significant:
+                        st.markdown(f"- {format_term_for_display(effect)}")
+                else:
+                    st.info("No marginally significant effects")
+            
+            st.divider()
+            
+            # Issues Summary
+            if diag.issues:
+                st.markdown("### Issues Detected")
+                
+                for issue in diag.issues:
+                    if issue.severity == 'critical':
+                        st.error(f"**✗ {issue.description}**")
+                        st.markdown(f"*Recommendation:* {issue.recommended_action}")
+                        if issue.affected_terms:
+                            st.markdown(f"*Affected terms:* {', '.join(issue.affected_terms)}")
+                    elif issue.severity == 'warning':
+                        st.warning(f"**⚡ {issue.description}**")
+                        st.markdown(f"*Recommendation:* {issue.recommended_action}")
+                        if issue.affected_terms:
+                            st.markdown(f"*Affected terms:* {', '.join(issue.affected_terms)}")
+                    else:
+                        st.info(f"ℹ️ {issue.description}")
+                        st.markdown(f"*Recommendation:* {issue.recommended_action}")
+            else:
+                st.success("✅ No critical issues detected for this response")
+            
+            # High Leverage Points
+            if diag.high_leverage_points:
+                st.divider()
+                st.markdown("### High Leverage Points")
+                st.caption(f"Found {len(diag.high_leverage_points)} observation(s) with high leverage")
+                
+                st.warning(
+                    f"**Runs with high leverage:** {', '.join(map(str, [p+1 for p in diag.high_leverage_points]))}\n\n"
+                    "High leverage points have unusual factor combinations and can disproportionately "
+                    "influence the model. Verify these runs for accuracy."
+                )
+            
+        else:
+            st.warning(f"No diagnostics available for {selected_response}")
     
-    st.markdown("**Variance Inflation Factors (VIF)**")
-    try:
-        from statsmodels.stats.outliers_influence import variance_inflation_factor
-        X = results.model_matrix
-        if X is not None and len(X.columns) > 1:
-            vif_data = pd.DataFrame()
-            vif_cols = [col for col in X.columns if col != 'Intercept']
-            if vif_cols:
-                vif_data["Term"] = vif_cols
-                vif_vals = []
-                for i, col in enumerate(X.columns):
-                    if col != 'Intercept':
-                        try:
-                            vif = variance_inflation_factor(X.values, i)
-                            vif_vals.append(vif)
-                        except:
-                            vif_vals.append(np.nan)
-                vif_data["VIF"] = vif_vals
-                
-                def highlight_vif(row):
-                    if row['VIF'] > 10:
-                        return ['background-color: #ffcccc'] * len(row)
-                    return [''] * len(row)
-                
-                st.dataframe(vif_data.style.apply(highlight_vif, axis=1), hide_index=True)
-                st.caption("⚠️ VIF > 10 indicates potential multicollinearity")
-    except Exception as e:
-        st.info(f"VIF calculation not available: {e}")
+    else:
+        # Compute diagnostics on demand
+        st.info("💡 Click to generate comprehensive design diagnostics including VIF, alias structure, prediction variance, and quality assessment.")
+        
+        if st.button("Generate Diagnostics", type="primary"):
+            with st.spinner("Computing diagnostics..."):
+                try:
+                    # Prepare metadata
+                    design = get_active_design()
+                    design_metadata = {
+                        'design_type': st.session_state.get('design_type', 'unknown'),
+                        'generators': st.session_state.get('design_metadata', {}).get('generators'),
+                        'is_split_plot': st.session_state.get('design_metadata', {}).get('is_split_plot', False),
+                        'has_blocking': 'Block' in design.columns,
+                        'has_center_points': st.session_state.get('design_metadata', {}).get('has_center_points', False)
+                    }
+                    
+                    # Compute diagnostics
+                    summary = compute_design_diagnostic_summary(
+                        design=design,
+                        responses=st.session_state['responses'],
+                        fitted_models={k: v.fitted_model for k, v in st.session_state['fitted_models'].items()},
+                        factors=factors,
+                        model_terms_per_response=st.session_state['model_terms_per_response'],
+                        design_metadata=design_metadata
+                    )
+                    
+                    # Generate quality report
+                    report = generate_quality_report(summary)
+                    
+                    # Save to session state
+                    st.session_state['diagnostics_summary'] = summary
+                    st.session_state['quality_report'] = report
+                    
+                    st.success("✅ Diagnostics computed successfully!")
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Failed to compute diagnostics: {e}")
+                    st.exception(e)
 
 with tab4:
-    st.info("📊 **Response Profiler** - Will be implemented in Session 11")
+    st.subheader("📊 Response Profiler")
     
-    st.markdown("**Planned Features:**")
-    st.markdown("""
-    - **Contour Plots**: 2D contour maps for pairs of factors
-    - **3D Surface Plots**: Interactive 3D visualization of response surface
-    - **Prediction Profiler**: Interactive sliders to explore factor effects
-    - **Desirability Functions**: Multi-objective optimization interface
-    - **Sweet Spot Plot**: Overlay feasible regions for multiple responses
-    """)
+    # Get current model and results
+    if selected_response not in st.session_state['fitted_models']:
+        st.warning("Please fit a model first")
+        st.stop()
+    
+    results = st.session_state['fitted_models'][selected_response]
+    model_terms = st.session_state['model_terms_per_response'][selected_response]
+    
+    # Check if we have continuous factors for profiling
+    continuous_factors = [f for f in factors if f.is_continuous()]
+    
+    if not continuous_factors:
+        st.info(
+            "Response profiling requires at least one continuous factor. "
+            "Your design contains only categorical/discrete factors."
+        )
+        st.stop()
+    
+    # === Prediction Profiler ===
+    st.markdown("### 🎚️ Prediction Profiler")
+    st.caption("Use sliders to explore how factor settings affect the predicted response.")
+    
+    # Create sliders for each factor
+    factor_settings = {}
+    
+    slider_cols = st.columns(min(3, len(factors)))
+    
+    for idx, factor in enumerate(factors):
+        with slider_cols[idx % len(slider_cols)]:
+            if factor.is_continuous():
+                # Continuous factor - slider
+                min_val, max_val = factor.levels
+                center = (min_val + max_val) / 2
+                
+                factor_settings[factor.name] = st.slider(
+                    factor.name,
+                    min_value=float(min_val),
+                    max_value=float(max_val),
+                    value=float(center),
+                    format="%.2f",
+                    key=f"profiler_{factor.name}"
+                )
+            else:
+                # Categorical/discrete - selectbox
+                factor_settings[factor.name] = st.selectbox(
+                    factor.name,
+                    options=factor.levels,
+                    index=len(factor.levels) // 2,
+                    key=f"profiler_{factor.name}"
+                )
+    
+    # Build prediction from current settings
+    try:
+        # Create a single-row dataframe with current settings
+        pred_df = pd.DataFrame([factor_settings])
+        
+        # Make prediction using fitted model
+        prediction = results.fitted_model.predict(pred_df)[0]
+        
+        # Display prediction
+        st.metric(
+            f"Predicted {selected_response}",
+            f"{prediction:.3f}",
+            help="Prediction at current factor settings"
+        )
+        
+    except Exception as e:
+        st.error(f"Could not compute prediction: {e}")
+    
+    st.divider()
+    
+    # === Contour Plots ===
+    if len(continuous_factors) >= 2:
+        st.markdown("### 🗺️ Contour Plots")
+        st.caption("2D contour maps showing response surface for pairs of factors.")
+        
+        # Factor pair selector
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            x_factor = st.selectbox(
+                "X-axis factor",
+                options=[f.name for f in continuous_factors],
+                index=0,
+                key="contour_x"
+            )
+        
+        with col2:
+            y_factor = st.selectbox(
+                "Y-axis factor",
+                options=[f.name for f in continuous_factors if f.name != x_factor],
+                index=0,
+                key="contour_y"
+            )
+        
+        if x_factor and y_factor:
+            try:
+                # Get factor objects
+                x_factor_obj = next(f for f in factors if f.name == x_factor)
+                y_factor_obj = next(f for f in factors if f.name == y_factor)
+                
+                # Create grid
+                x_min, x_max = x_factor_obj.levels
+                y_min, y_max = y_factor_obj.levels
+                
+                x_grid = np.linspace(x_min, x_max, 50)
+                y_grid = np.linspace(y_min, y_max, 50)
+                X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
+                
+                # Prepare prediction grid
+                # Hold other factors at current settings
+                grid_points = []
+                for i in range(len(x_grid)):
+                    for j in range(len(y_grid)):
+                        point = factor_settings.copy()
+                        point[x_factor] = X_mesh[j, i]
+                        point[y_factor] = Y_mesh[j, i]
+                        grid_points.append(point)
+                
+                grid_df = pd.DataFrame(grid_points)
+                
+                # Predict on grid
+                Z_pred = results.fitted_model.predict(grid_df)
+                Z_mesh = Z_pred.reshape(X_mesh.shape)
+                
+                # Create contour plot
+                fig = go.Figure()
+                
+                # Add contour
+                fig.add_trace(go.Contour(
+                    x=x_grid,
+                    y=y_grid,
+                    z=Z_mesh,
+                    colorscale='RdYlGn',
+                    colorbar=dict(title=selected_response),
+                    contours=dict(
+                        coloring='heatmap',
+                        showlabels=True,
+                        labelfont=dict(size=10, color='white')
+                    ),
+                    hovertemplate=(
+                        f"{x_factor}: %{{x:.2f}}<br>"
+                        f"{y_factor}: %{{y:.2f}}<br>"
+                        f"{selected_response}: %{{z:.2f}}<extra></extra>"
+                    )
+                ))
+                
+                # Add current point
+                fig.add_trace(go.Scatter(
+                    x=[factor_settings[x_factor]],
+                    y=[factor_settings[y_factor]],
+                    mode='markers',
+                    marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')),
+                    name='Current Setting',
+                    hovertemplate=f"{x_factor}: %{{x:.2f}}<br>{y_factor}: %{{y:.2f}}<extra></extra>"
+                ))
+                
+                fig.update_layout(
+                    xaxis_title=x_factor,
+                    yaxis_title=y_factor,
+                    height=500,
+                    showlegend=True
+                )
+                
+                fig = apply_plot_style(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"Could not create contour plot: {e}")
+                st.exception(e)
+    
+    else:
+        st.info("Contour plots require at least 2 continuous factors.")
+    
+    st.divider()
+    
+    # === 3D Surface Plot ===
+    if len(continuous_factors) >= 2:
+        st.markdown("### 🏔️ 3D Response Surface")
+        st.caption("Interactive 3D visualization of the response surface.")
+        
+        # Use same factors as contour plot
+        if x_factor and y_factor:
+            try:
+                # Reuse the mesh from contour plot
+                fig_3d = go.Figure()
+                
+                fig_3d.add_trace(go.Surface(
+                    x=x_grid,
+                    y=y_grid,
+                    z=Z_mesh,
+                    colorscale='RdYlGn',
+                    colorbar=dict(title=selected_response),
+                    hovertemplate=(
+                        f"{x_factor}: %{{x:.2f}}<br>"
+                        f"{y_factor}: %{{y:.2f}}<br>"
+                        f"{selected_response}: %{{z:.2f}}<extra></extra>"
+                    )
+                ))
+                
+                fig_3d.update_layout(
+                    scene=dict(
+                        xaxis_title=x_factor,
+                        yaxis_title=y_factor,
+                        zaxis_title=selected_response,
+                        camera=dict(
+                            eye=dict(x=1.5, y=1.5, z=1.3)
+                        )
+                    ),
+                    height=600
+                )
+                
+                fig_3d = apply_plot_style(fig_3d)
+                st.plotly_chart(fig_3d, use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"Could not create 3D surface plot: {e}")
+    
+    st.divider()
+    
+    # === Individual Factor Response Curves ===
+    st.markdown("### 📈 Individual Factor Effects")
+    st.caption("Response vs each factor (holding others at current settings).")
+    
+    # Show response curves for continuous factors
+    factor_cols = st.columns(min(3, len(continuous_factors)))
+    
+    for idx, factor in enumerate(continuous_factors):
+        with factor_cols[idx % len(factor_cols)]:
+            st.markdown(f"**{factor.name}**")
+            
+            try:
+                # Create range for this factor
+                f_min, f_max = factor.levels
+                f_range = np.linspace(f_min, f_max, 100)
+                
+                # Create prediction points
+                points = []
+                for val in f_range:
+                    point = factor_settings.copy()
+                    point[factor.name] = val
+                    points.append(point)
+                
+                points_df = pd.DataFrame(points)
+                predictions = results.fitted_model.predict(points_df)
+                
+                # Create line plot
+                fig = go.Figure()
+                
+                fig.add_trace(go.Scatter(
+                    x=f_range,
+                    y=predictions,
+                    mode='lines',
+                    line=dict(color=PLOT_COLORS['primary'], width=3),
+                    hovertemplate=f"{factor.name}: %{{x:.2f}}<br>{selected_response}: %{{y:.2f}}<extra></extra>"
+                ))
+                
+                # Mark current setting
+                current_val = factor_settings[factor.name]
+                current_pred = results.fitted_model.predict(pd.DataFrame([factor_settings]))[0]
+                
+                fig.add_trace(go.Scatter(
+                    x=[current_val],
+                    y=[current_pred],
+                    mode='markers',
+                    marker=dict(size=12, color='red', symbol='diamond'),
+                    name='Current',
+                    hovertemplate=f"{factor.name}: {current_val:.2f}<br>{selected_response}: {current_pred:.2f}<extra></extra>"
+                ))
+                
+                fig.update_layout(
+                    xaxis_title=factor.name,
+                    yaxis_title=selected_response,
+                    height=300,
+                    showlegend=False
+                )
+                
+                fig = apply_plot_style(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"Error plotting {factor.name}: {e}")
 
 st.divider()
 

@@ -173,6 +173,16 @@ def can_access_step(step: int) -> bool:
     if step == 5:
         return is_step_complete(4)
     
+    # For step 6 (Augmentation), only requires design structure
+    # Analysis is helpful but not required - user can view design and decide to augment
+    if step == 6:
+        return st.session_state.get('design') is not None
+    
+    # For step 7 (Optimization), requires analysis to be complete
+    # Augmentation (step 6) is optional, so skip it
+    if step == 7:
+        return is_step_complete(5)
+    
     # For other steps, all previous steps must be complete
     for i in range(1, step):
         if not is_step_complete(i):

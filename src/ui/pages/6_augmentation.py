@@ -30,14 +30,26 @@ from src.ui.components.augmentation_wizard import (
 # Initialize state
 initialize_session_state()
 
-# Check access
+# Check access - only need a design structure
 if not can_access_step(6):
-    st.warning("⚠️ Please complete Steps 1-5 first")
+    st.warning("⚠️ Please create or import a design first")
     
-    # Show which step is incomplete
-    for i in range(1, 6):
-        if not is_step_complete(i):
-            st.error(f"Step {i} is not complete")
+    st.info(
+        "**To access augmentation:**\n\n"
+        "Option 1: Create a design (Steps 1-3)\n"
+        "Option 2: Import a CSV with design structure (Step 4)"
+    )
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("← Go to Factor Definition", use_container_width=True):
+            st.session_state['current_step'] = 1
+            st.switch_page("pages/1_define_factors.py")
+    
+    with col2:
+        if st.button("Go to Import Data →", use_container_width=True):
+            st.session_state['current_step'] = 4
+            st.switch_page("pages/4_import_results.py")
     
     st.stop()
 
@@ -107,16 +119,82 @@ if st.session_state.get('augmented_design') is not None:
     
     st.stop()
 
-# Check if quality report exists
+# Check if quality report exists - if not, show design info and suggest analysis
 if not st.session_state.get('quality_report'):
-    st.warning(
-        "⚠️ **No quality assessment available.**\n\n"
-        "Please run quality assessment in **Step 5: Analyze** first."
+    st.info(
+        "📊 **Design Structure Available**\n\n"
+        "You have a design loaded, but haven't run analysis yet. "
+        "Augmentation recommendations are most powerful when based on analysis results."
     )
     
-    if st.button("← Back to Analysis"):
-        st.session_state['current_step'] = 5
-        st.switch_page("pages/5_analyze.py")
+    # Show basic design info
+    design = get_active_design()
+    factors = st.session_state.get('factors', [])
+    
+    st.subheader("📋 Current Design")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Factors", len(factors))
+    with col2:
+        st.metric("Runs", len(design))
+    with col3:
+        design_type = st.session_state.get('design_metadata', {}).get('design_type', 'Unknown')
+        st.metric("Type", design_type.replace('_', ' ').title())
+    
+    # Show design preview
+    with st.expander("👁️ View Design"):
+        st.dataframe(design, use_container_width=True, hide_index=False)
+    
+    st.divider()
+    
+    # Suggest next steps
+    st.markdown("### Recommended Next Steps")
+    
+    st.markdown(
+        "**Option 1: Analyze First (Recommended)**\n"
+        "- Import experimental results (Step 4)\n"
+        "- Fit models and view diagnostics (Step 5)\n"
+        "- Get intelligent augmentation recommendations based on your data\n\n"
+        
+        "**Option 2: Plan Augmentation Now**\n"
+        "- You can still augment based on design structure alone\n"
+        "- Useful for planning experiments before running them\n"
+        "- Limited to structural augmentation strategies"
+    )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📊 Go to Analysis", type="primary", use_container_width=True):
+            st.session_state['current_step'] = 5
+            st.switch_page("pages/5_analyze.py")
+    
+    with col2:
+        # Allow proceeding without analysis
+        if st.button("➡️ Continue Without Analysis", use_container_width=True):
+            st.session_state['skip_quality_check'] = True
+            st.rerun()
+    
+    # If user chose to skip quality check, continue
+    if not st.session_state.get('skip_quality_check', False):
+        st.stop()
+    
+    # User chose to continue - show basic augmentation options
+    st.divider()
+    st.subheader("🔧 Basic Augmentation Options (No Analysis)")
+    
+    st.markdown(
+        "Without analysis results, augmentation options are limited to structural strategies:\n\n"
+        "- **Foldover designs** (for fractional factorials)\n"
+        "- **Add center points** (for curvature detection)\n"
+        "- **Add axial points** (to extend to response surface)\n\n"
+        "For intelligent, data-driven recommendations, please complete Step 5: Analysis first."
+    )
+    
+    # TODO: Implement basic structural augmentation options
+    st.warning("⚠️ Basic augmentation (without analysis) is not yet implemented.")
+    st.info("Please complete Step 5: Analysis to access full augmentation capabilities.")
     
     st.stop()
 
