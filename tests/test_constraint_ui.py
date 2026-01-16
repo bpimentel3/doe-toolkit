@@ -68,8 +68,18 @@ def test_format_constraint_preview_equality():
 def test_validate_constraints_valid():
     """Test validation with valid constraints."""
     factors = [
-        Factor('Temperature', FactorType.CONTINUOUS, [100, 200], ChangeabilityLevel.EASY),
-        Factor('Pressure', FactorType.CONTINUOUS, [1, 5], ChangeabilityLevel.EASY)
+        Factor(
+            name='Temperature',
+            factor_type=FactorType.CONTINUOUS,
+            changeability=ChangeabilityLevel.EASY,
+            levels=[100, 200]
+        ),
+        Factor(
+            name='Pressure',
+            factor_type=FactorType.CONTINUOUS,
+            changeability=ChangeabilityLevel.EASY,
+            levels=[1, 5]
+        )
     ]
     
     constraints = [
@@ -89,7 +99,12 @@ def test_validate_constraints_valid():
 def test_validate_constraints_unknown_factor():
     """Test validation catches unknown factor."""
     factors = [
-        Factor('Temperature', FactorType.CONTINUOUS, [100, 200], ChangeabilityLevel.EASY)
+        Factor(
+            name='Temperature',
+            factor_type=FactorType.CONTINUOUS,
+            changeability=ChangeabilityLevel.EASY,
+            levels=[100, 200]
+        )
     ]
     
     constraints = [
@@ -110,8 +125,18 @@ def test_validate_constraints_unknown_factor():
 def test_validate_constraints_categorical_factor():
     """Test validation rejects categorical factors in constraints."""
     factors = [
-        Factor('Temperature', FactorType.CONTINUOUS, [100, 200], ChangeabilityLevel.EASY),
-        Factor('Material', FactorType.CATEGORICAL, ['A', 'B', 'C'], ChangeabilityLevel.EASY)
+        Factor(
+            name='Temperature',
+            factor_type=FactorType.CONTINUOUS,
+            changeability=ChangeabilityLevel.EASY,
+            levels=[100, 200]
+        ),
+        Factor(
+            name='Material',
+            factor_type=FactorType.CATEGORICAL,
+            changeability=ChangeabilityLevel.EASY,
+            levels=['A', 'B', 'C']
+        )
     ]
     
     constraints = [
