@@ -3,7 +3,7 @@ Model Builder Component - JMP-style term selection interface.
 
 Provides visual term building with mathematical notation display.
 """
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Optional
 import streamlit as st
 from src.core.factors import Factor, FactorType
 
@@ -484,3 +484,143 @@ def display_model_builder(
             # Don't call st.rerun() here - return updated terms and let parent handle it
     
     return current_terms
+
+
+def display_stepwise_button(
+    factors: List[Factor],
+    anova_analysis: Optional['ANOVAAnalysis'],
+    key_prefix: str = ""
+) -> Optional['StepwiseResults']:
+    """
+    Display stepwise regression button and handle execution.
+    
+    Parameters
+    ----------
+    factors : List[Factor]
+        Available factors for model building
+    anova_analysis : ANOVAAnalysis, optional
+        Fitted ANOVA analysis object (required for stepwise)
+    key_prefix : str
+        Prefix for Streamlit widget keys
+    
+    Returns
+    -------
+    StepwiseResults, optional
+        Results if stepwise completed, None otherwise
+    
+    Notes
+    -----
+    This function should be called AFTER display_model_builder() in the UI.
+    It displays a button that, when clicked, runs stepwise selection in the
+    background with a progress bar.
+    """
+    from src.core.analysis import ANOVAAnalysis, generate_model_terms
+    from src.core.stepwise import stepwise_selection, format_stepwise_summary, StepwiseResults
+    
+    # Don't show button if no analysis available
+    if anova_analysis is None:
+        return None
+    
+    st.divider()
+    
+    # Stepwise configuration section
+    with st.expander("⚙️ Stepwise Regression Settings", expanded=False):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            max_iter = st.number_input(
+                "Max iterations",
+                min_value=10,
+                max_value=200,
+                value=50,
+                step=10,
+                key=f"{key_prefix}_stepwise_max_iter",
+                help="Maximum number of stepwise iterations before stopping"
+            )
+        
+        with col2:
+            bic_threshold = st.number_input(
+                "BIC threshold",
+                min_value=0.1,
+                max_value=10.0,
+                value=2.0,
+                step=0.1,
+                key=f"{key_prefix}_stepwise_bic_threshold",
+                help="Minimum BIC improvement to continue (standard is 2.0)"
+            )
+        
+        # Generate all possible terms as candidate pool
+        st.caption(
+            "Stepwise will consider all main effects, 2-way interactions, "
+            "and quadratic terms for continuous factors."
+        )
+    
+    # Stepwise button
+    if st.button(
+        "🔍 Stepwise Regression (BIC)",
+        type="primary",
+        use_container_width=True,
+        key=f"{key_prefix}_stepwise_button",
+        help="Automatically select best model terms using BIC criterion"
+    ):
+        # Generate candidate pool
+        all_terms = ['1']  # Always include intercept
+        
+        # Main effects
+        factor_names = [f.name for f in factors]
+        all_terms.extend(factor_names)
+        
+        # Two-way interactions
+        for i in range(len(factor_names)):
+            for j in range(i + 1, len(factor_names)):
+                all_terms.append(f"{factor_names[i]}*{factor_names[j]}")
+        
+        # Quadratic terms (continuous only)
+        continuous_factors = [f for f in factors if f.is_continuous()]
+        for factor in continuous_factors:
+            all_terms.append(f"I({factor.name}**2)")
+        
+        # Progress tracking
+        progress_bar = st.progress(0, text="Initializing stepwise selection...")
+        
+        def update_progress(current_step: int, total_steps: int):
+            """Update progress bar during stepwise."""
+            progress = min(current_step / total_steps, 1.0)
+            progress_bar.progress(
+                progress,
+                text=f"Step {current_step}/{total_steps}: Evaluating candidates..."
+            )
+        
+        # Run stepwise selection
+        with st.spinner("Running stepwise regression..."):
+            try:
+                results = stepwise_selection(
+                    anova_analysis=anova_analysis,
+                    all_possible_terms=all_terms,
+                    starting_terms=['1'],  # Start with intercept only
+                    mandatory_terms=['1'],  # Intercept must stay
+                    max_iterations=max_iter,
+                    bic_threshold=bic_threshold,
+                    progress_callback=update_progress
+                )
+                
+                # Clear progress bar
+                progress_bar.empty()
+                
+                # Display results
+                st.success(f"✓ Stepwise regression completed in {results.n_iterations} iterations")
+                
+                # Show summary
+                summary_md = format_stepwise_summary(results)
+                st.markdown(summary_md)
+                
+                # Return results for parent to update model
+                return results
+            
+            except Exception as e:
+                progress_bar.empty()
+                st.error(f"Stepwise regression failed: {e}")
+                st.exception(e)
+                return None
+    
+    return None

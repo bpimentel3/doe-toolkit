@@ -26,7 +26,7 @@ from src.ui.utils.state_management import (
     invalidate_downstream_state
 )
 from src.ui.components.quality_dashboard import display_quality_dashboard
-from src.ui.components.model_builder import display_model_builder, format_term_for_display
+from src.ui.components.model_builder import display_model_builder, format_term_for_display, display_stepwise_button
 from src.core.analysis import ANOVAAnalysis, generate_model_terms
 from src.core.diagnostics.summary import (
     compute_design_diagnostic_summary,
@@ -53,15 +53,15 @@ def apply_plot_style(fig):
     """Apply consistent ACS-style formatting to plotly figures."""
     # Update layout (background, font, margins)
     fig.update_layout(
-        plot_bgcolor='#f0f0f0',  # Light gray background to match dark theme
-        paper_bgcolor='#f0f0f0',  # Light gray paper to match dark theme
+        plot_bgcolor='white',  # White plot background
+        paper_bgcolor='white',  # White paper background
         font=dict(family='Arial, sans-serif', size=11, color='#000000'),  # Full black text
         margin=dict(l=50, r=30, t=30, b=50, pad=5)  # Tighter margins (~5%)
     )
     
     # Update axes separately to preserve titles
     fig.update_xaxes(
-        showgrid=True, gridwidth=0.5, gridcolor='#d0d0d0',
+        showgrid=True, gridwidth=0.5, gridcolor='#e0e0e0',  # Slightly darker gray for white background
         linecolor='#000000', linewidth=1.5, mirror=True,
         ticks='outside', tickwidth=1, tickcolor='#000000', showline=True,
         tickfont=dict(color='#000000'),  # Ensure tick labels are black
@@ -69,7 +69,7 @@ def apply_plot_style(fig):
     )
     
     fig.update_yaxes(
-        showgrid=True, gridwidth=0.5, gridcolor='#d0d0d0',
+        showgrid=True, gridwidth=0.5, gridcolor='#e0e0e0',  # Slightly darker gray for white background
         linecolor='#000000', linewidth=1.5, mirror=True,
         ticks='outside', tickwidth=1, tickcolor='#000000', showline=True,
         tickfont=dict(color='#000000'),  # Ensure tick labels are black
@@ -1277,6 +1277,16 @@ with tab4:
         st.markdown("### 🗺️ Contour Plots")
         st.caption("2D contour maps showing response surface for pairs of factors.")
         
+        # Initialize contour settings if not in session state
+        if 'contour_settings' not in st.session_state:
+            st.session_state['contour_settings'] = {}
+            for factor in factors:
+                if factor.is_continuous():
+                    min_val, max_val = factor.levels
+                    st.session_state['contour_settings'][factor.name] = (min_val + max_val) / 2
+                else:
+                    st.session_state['contour_settings'][factor.name] = factor.levels[len(factor.levels) // 2]
+        
         # Factor pair selector
         col1, col2 = st.columns(2)
         
@@ -1295,6 +1305,60 @@ with tab4:
                 index=0,
                 key="contour_y"
             )
+        
+        # Sliders for other factors (held constant)
+        other_factors = [f for f in factors if f.name not in [x_factor, y_factor]]
+        
+        if other_factors:
+            st.markdown("**Hold constant at:**")
+            
+            # Create sliders/selects for other factors
+            n_other = len(other_factors)
+            n_cols = min(3, n_other)
+            n_rows = (n_other + n_cols - 1) // n_cols
+            
+            for row_idx in range(n_rows):
+                cols = st.columns(n_cols)
+                
+                for col_idx in range(n_cols):
+                    factor_idx = row_idx * n_cols + col_idx
+                    
+                    if factor_idx >= n_other:
+                        break
+                    
+                    factor = other_factors[factor_idx]
+                    
+                    with cols[col_idx]:
+                        if factor.is_continuous():
+                            min_val, max_val = factor.levels
+                            current_val = st.session_state['contour_settings'][factor.name]
+                            
+                            new_val = st.slider(
+                                factor.name,
+                                min_value=float(min_val),
+                                max_value=float(max_val),
+                                value=float(current_val),
+                                format="%.3f",
+                                key=f"contour_slider_{factor.name}"
+                            )
+                            
+                            if new_val != st.session_state['contour_settings'][factor.name]:
+                                st.session_state['contour_settings'][factor.name] = new_val
+                                st.rerun()
+                        else:
+                            current_val = st.session_state['contour_settings'][factor.name]
+                            current_idx = factor.levels.index(current_val)
+                            
+                            new_val = st.selectbox(
+                                factor.name,
+                                options=factor.levels,
+                                index=current_idx,
+                                key=f"contour_select_{factor.name}"
+                            )
+                            
+                            if new_val != st.session_state['contour_settings'][factor.name]:
+                                st.session_state['contour_settings'][factor.name] = new_val
+                                st.rerun()
         
         # Store mesh data at outer scope for both contour and 3D plots
         Z_mesh = None
@@ -1316,11 +1380,11 @@ with tab4:
                 X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
                 
                 # Prepare prediction grid
-                # Hold other factors at current settings
+                # Hold other factors at contour settings
                 grid_points = []
                 for i in range(len(x_grid)):
                     for j in range(len(y_grid)):
-                        point = factor_settings.copy()
+                        point = st.session_state['contour_settings'].copy()
                         point[x_factor] = X_mesh[j, i]
                         point[y_factor] = Y_mesh[j, i]
                         grid_points.append(point)
@@ -1352,16 +1416,6 @@ with tab4:
                         f"{y_factor}: %{{y:.2f}}<br>"
                         f"{selected_response}: %{{z:.2f}}<extra></extra>"
                     )
-                ))
-                
-                # Add current point
-                fig.add_trace(go.Scatter(
-                    x=[factor_settings[x_factor]],
-                    y=[factor_settings[y_factor]],
-                    mode='markers',
-                    marker=dict(size=15, color='red', symbol='x', line=dict(width=2, color='white')),
-                    name='Current Setting',
-                    hovertemplate=f"{x_factor}: %{{x:.2f}}<br>{y_factor}: %{{y:.2f}}<extra></extra>"
                 ))
                 
                 fig.update_layout(
