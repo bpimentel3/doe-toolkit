@@ -409,8 +409,8 @@ with st.expander("📚 Factor Definition Guide"):
 st.divider()
 
 if len(st.session_state.get('factors', [])) >= 2:
-    if st.button("Continue to Design Selection →", type="primary", use_container_width=True):
+    if st.button("Continue to Model Selection →", type="primary", use_container_width=True):
         st.session_state['current_step'] = 2
-        st.switch_page("pages/2_choose_design.py")
+        st.switch_page("pages/2_select_model.py")
 else:
     st.info("💡 Define at least 2 factors to continue")

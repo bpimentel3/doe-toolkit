@@ -355,7 +355,13 @@ if 'model_terms_per_response' not in st.session_state:
     st.session_state['model_terms_per_response'] = {}
 
 if selected_response not in st.session_state['model_terms_per_response']:
-    default_terms = generate_model_terms(factors, 'linear', include_intercept=True)
+    # Pre-populate from Step 2 if available, otherwise default to linear
+    if 'model_terms' in st.session_state and st.session_state['model_terms']:
+        default_terms = st.session_state['model_terms']
+        st.info("🎯 Using model selected in Step 2. You can modify it below if needed.")
+    else:
+        default_terms = generate_model_terms(factors, 'linear', include_intercept=True)
+        st.info("ℹ️ No model was pre-selected. Defaulting to linear model. You can modify it below.")
     st.session_state['model_terms_per_response'][selected_response] = default_terms
 
 current_terms = st.session_state['model_terms_per_response'][selected_response]
@@ -365,7 +371,43 @@ updated_terms = display_model_builder(
     key_prefix=f"model_builder_{selected_response}"
 )
 
+# Check model compatibility with design type
+design_type = st.session_state.get('design_type', '')
 if updated_terms != current_terms:
+    # Check for incompatible terms
+    warnings = []
+    
+    has_quadratic = any(t.startswith('I(') and '**2' in t for t in updated_terms)
+    has_cubic = any(t.startswith('I(') and '**3' in t for t in updated_terms)
+    
+    if design_type == "Fractional Factorial" and has_quadratic:
+        warnings.append(
+            "⚠️ **Warning:** Fractional factorial designs typically cannot estimate quadratic terms. "
+            "You may encounter aliasing or rank deficiency issues."
+        )
+    
+    if design_type == "Full Factorial" and has_quadratic:
+        # Check if we have center points
+        design = get_active_design()
+        has_center = st.session_state.get('design_config', {}).get('n_center_points', 0) > 0
+        
+        if not has_center:
+            warnings.append(
+                "⚠️ **Warning:** Your model includes quadratic terms, but full factorial designs "
+                "without center points cannot estimate pure quadratic effects (they're aliased with interactions). "
+                "Consider using Response Surface design or adding center points."
+            )
+    
+    if design_type == "Latin Hypercube" and (has_quadratic or len([t for t in updated_terms if '*' in t]) > 0):
+        warnings.append(
+            "💡 **Note:** Latin Hypercube designs are primarily for main effects screening. "
+            "Interaction and quadratic terms can be fit but may have limited power."
+        )
+    
+    # Display warnings
+    for warning in warnings:
+        st.warning(warning)
+    
     st.session_state['model_terms_per_response'][selected_response] = updated_terms
     invalidate_downstream_state(from_step=5)
     st.rerun()
@@ -992,7 +1034,8 @@ with tab3:
                     st.exception(e)
 
 with tab4:
-    st.subheader("📊 Response Profiler")
+    st.subheader("📊 Prediction Profiler")
+    st.caption("Interactive prediction profiler - adjust factor settings and see how the response changes.")
     
     # Get current model and results
     if selected_response not in st.session_state['fitted_models']:
@@ -1002,68 +1045,232 @@ with tab4:
     results = st.session_state['fitted_models'][selected_response]
     model_terms = st.session_state['model_terms_per_response'][selected_response]
     
-    # Check if we have continuous factors for profiling
-    continuous_factors = [f for f in factors if f.is_continuous()]
-    
-    if not continuous_factors:
-        st.info(
-            "Response profiling requires at least one continuous factor. "
-            "Your design contains only categorical/discrete factors."
-        )
+    # Check if we have factors for profiling
+    if not factors:
+        st.info("No factors available for profiling.")
         st.stop()
     
-    # === Prediction Profiler ===
-    st.markdown("### 🎚️ Prediction Profiler")
-    st.caption("Use sliders to explore how factor settings affect the predicted response.")
+    # === JMP-Style Prediction Profiler ===
     
-    # Create sliders for each factor
+    # Initialize factor settings if not in session state
+    if 'profiler_settings' not in st.session_state:
+        st.session_state['profiler_settings'] = {}
+    
+    # Set default values (center for continuous, middle option for categorical)
     factor_settings = {}
-    
-    slider_cols = st.columns(min(3, len(factors)))
-    
-    for idx, factor in enumerate(factors):
-        with slider_cols[idx % len(slider_cols)]:
+    for factor in factors:
+        if factor.name not in st.session_state['profiler_settings']:
             if factor.is_continuous():
-                # Continuous factor - slider
                 min_val, max_val = factor.levels
-                center = (min_val + max_val) / 2
-                
-                factor_settings[factor.name] = st.slider(
-                    factor.name,
-                    min_value=float(min_val),
-                    max_value=float(max_val),
-                    value=float(center),
-                    format="%.2f",
-                    key=f"profiler_{factor.name}"
-                )
+                st.session_state['profiler_settings'][factor.name] = (min_val + max_val) / 2
             else:
-                # Categorical/discrete - selectbox
-                factor_settings[factor.name] = st.selectbox(
-                    factor.name,
-                    options=factor.levels,
-                    index=len(factor.levels) // 2,
-                    key=f"profiler_{factor.name}"
-                )
+                st.session_state['profiler_settings'][factor.name] = factor.levels[len(factor.levels) // 2]
+        factor_settings[factor.name] = st.session_state['profiler_settings'][factor.name]
     
-    # Build prediction from current settings
+    # Compute current prediction
     try:
-        # Create a single-row dataframe with current settings
         pred_df = pd.DataFrame([factor_settings])
-        
-        # Make prediction using fitted model
-        prediction = results.fitted_model.predict(pred_df)[0]
-        
-        # Display prediction
-        st.metric(
-            f"Predicted {selected_response}",
-            f"{prediction:.3f}",
-            help="Prediction at current factor settings"
-        )
-        
+        current_prediction = results.fitted_model.predict(pred_df)[0]
     except Exception as e:
         st.error(f"Could not compute prediction: {e}")
+        current_prediction = 0.0
+    
+    # Display current prediction prominently at top
+    st.markdown(f"### Predicted {selected_response}: **{current_prediction:.4f}**")
     
     st.divider()
+    
+    # Create profiler plots in a grid
+    n_factors = len(factors)
+    n_cols = min(3, n_factors)  # Max 3 columns
+    n_rows = (n_factors + n_cols - 1) // n_cols
+    
+    for row_idx in range(n_rows):
+        cols = st.columns(n_cols)
+        
+        for col_idx in range(n_cols):
+            factor_idx = row_idx * n_cols + col_idx
+            
+            if factor_idx >= n_factors:
+                break
+            
+            factor = factors[factor_idx]
+            
+            with cols[col_idx]:
+                st.markdown(f"**{factor.name}**")
+                
+                if factor.is_continuous():
+                    # === Continuous Factor: Response Trace Plot ===
+                    min_val, max_val = factor.levels
+                    
+                    # Generate response trace (holding other factors constant)
+                    trace_points = 100
+                    factor_range = np.linspace(min_val, max_val, trace_points)
+                    
+                    trace_predictions = []
+                    trace_data = []
+                    for val in factor_range:
+                        point = factor_settings.copy()
+                        point[factor.name] = val
+                        trace_data.append(point)
+                        point_df = pd.DataFrame([point])
+                        pred = results.fitted_model.predict(point_df)[0]
+                        trace_predictions.append(pred)
+                    
+                    # Calculate 95% CI of the fit
+                    trace_df = pd.DataFrame(trace_data)
+                    
+                    # Get prediction with standard errors
+                    # Note: statsmodels get_prediction() provides standard errors
+                    try:
+                        pred_obj = results.fitted_model.get_prediction(trace_df)
+                        pred_summary = pred_obj.summary_frame(alpha=0.05)
+                        ci_lower = pred_summary['mean_ci_lower'].values
+                        ci_upper = pred_summary['mean_ci_upper'].values
+                    except Exception:
+                        # Fallback: no CI if get_prediction fails
+                        ci_lower = None
+                        ci_upper = None
+                    
+                    # Create trace plot
+                    fig = go.Figure()
+                    
+                    # 95% CI band (if available)
+                    if ci_lower is not None and ci_upper is not None:
+                        fig.add_trace(go.Scatter(
+                            x=np.concatenate([factor_range, factor_range[::-1]]),
+                            y=np.concatenate([ci_upper, ci_lower[::-1]]),
+                            fill='toself',
+                            fillcolor='rgba(128, 128, 128, 0.2)',
+                            line=dict(width=0),
+                            showlegend=False,
+                            hoverinfo='skip'
+                        ))
+                    
+                    # Response trace line
+                    fig.add_trace(go.Scatter(
+                        x=factor_range,
+                        y=trace_predictions,
+                        mode='lines',
+                        line=dict(color=PLOT_COLORS['primary'], width=2),
+                        hovertemplate=f"{factor.name}: %{{x:.3f}}<br>{selected_response}: %{{y:.3f}}<extra></extra>",
+                        showlegend=False
+                    ))
+                    
+                    # Current setting - vertical line
+                    current_val = factor_settings[factor.name]
+                    fig.add_vline(
+                        x=current_val,
+                        line=dict(color='red', dash='dash', width=2),
+                        annotation=dict(
+                            text=f"{current_val:.2f}",
+                            yref='paper',
+                            y=1.05,
+                            showarrow=False,
+                            font=dict(size=10, color='red')
+                        )
+                    )
+                    
+                    # Current prediction point
+                    fig.add_trace(go.Scatter(
+                        x=[current_val],
+                        y=[current_prediction],
+                        mode='markers',
+                        marker=dict(size=10, color='red', symbol='circle'),
+                        showlegend=False,
+                        hovertemplate=f"{factor.name}: {current_val:.3f}<br>{selected_response}: {current_prediction:.3f}<extra></extra>"
+                    ))
+                    
+                    fig.update_layout(
+                        height=200,
+                        margin=dict(l=40, r=10, t=20, b=40),
+                        xaxis_title=None,
+                        yaxis_title=selected_response if col_idx == 0 else None,
+                        showlegend=False
+                    )
+                    
+                    fig.update_xaxes(range=[min_val - 0.05*(max_val-min_val), 
+                                           max_val + 0.05*(max_val-min_val)])
+                    
+                    fig = apply_plot_style(fig)
+                    st.plotly_chart(fig, use_container_width=True, key=f"plot_{factor.name}")
+                    
+                    # Slider below plot
+                    new_val = st.slider(
+                        f"{factor.name} setting",
+                        min_value=float(min_val),
+                        max_value=float(max_val),
+                        value=float(current_val),
+                        format="%.3f",
+                        key=f"profiler_slider_{factor.name}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Update session state if changed
+                    if new_val != st.session_state['profiler_settings'][factor.name]:
+                        st.session_state['profiler_settings'][factor.name] = new_val
+                        st.rerun()
+                
+                else:
+                    # === Categorical/Discrete Factor: Bar Chart ===
+                    
+                    # Generate predictions for each level
+                    level_predictions = []
+                    for level in factor.levels:
+                        point = factor_settings.copy()
+                        point[factor.name] = level
+                        point_df = pd.DataFrame([point])
+                        pred = results.fitted_model.predict(point_df)[0]
+                        level_predictions.append(pred)
+                    
+                    # Create bar chart
+                    fig = go.Figure()
+                    
+                    # Determine which bar is current
+                    current_level = factor_settings[factor.name]
+                    current_idx = factor.levels.index(current_level)
+                    
+                    # Color bars (current one red, others blue)
+                    colors = [PLOT_COLORS['danger'] if i == current_idx else PLOT_COLORS['primary'] 
+                             for i in range(len(factor.levels))]
+                    
+                    fig.add_trace(go.Bar(
+                        x=[str(level) for level in factor.levels],
+                        y=level_predictions,
+                        marker=dict(color=colors, line=dict(color='#000000', width=1)),
+                        hovertemplate=f"{factor.name}: %{{x}}<br>{selected_response}: %{{y:.3f}}<extra></extra>",
+                        showlegend=False
+                    ))
+                    
+                    fig.update_layout(
+                        height=200,
+                        margin=dict(l=40, r=10, t=20, b=40),
+                        xaxis_title=None,
+                        yaxis_title=selected_response if col_idx == 0 else None,
+                        showlegend=False
+                    )
+                    
+                    fig = apply_plot_style(fig)
+                    st.plotly_chart(fig, use_container_width=True, key=f"plot_{factor.name}")
+                    
+                    # Selectbox below plot
+                    new_val = st.selectbox(
+                        f"{factor.name} setting",
+                        options=factor.levels,
+                        index=current_idx,
+                        key=f"profiler_select_{factor.name}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Update session state if changed
+                    if new_val != st.session_state['profiler_settings'][factor.name]:
+                        st.session_state['profiler_settings'][factor.name] = new_val
+                        st.rerun()
+    
+    st.divider()
+    
+    # Define continuous factors for contour/3D plots
+    continuous_factors = [f for f in factors if f.is_continuous()]
     
     # === Contour Plots ===
     if len(continuous_factors) >= 2:
@@ -1088,6 +1295,11 @@ with tab4:
                 index=0,
                 key="contour_y"
             )
+        
+        # Store mesh data at outer scope for both contour and 3D plots
+        Z_mesh = None
+        x_grid = None
+        y_grid = None
         
         if x_factor and y_factor:
             try:
@@ -1117,7 +1329,8 @@ with tab4:
                 
                 # Predict on grid
                 Z_pred = results.fitted_model.predict(grid_df)
-                Z_mesh = Z_pred.reshape(X_mesh.shape)
+                # Convert Series to numpy array before reshaping
+                Z_mesh = np.array(Z_pred).reshape(X_mesh.shape)
                 
                 # Create contour plot
                 fig = go.Figure()
@@ -1176,7 +1389,7 @@ with tab4:
         st.caption("Interactive 3D visualization of the response surface.")
         
         # Use same factors as contour plot
-        if x_factor and y_factor:
+        if x_factor and y_factor and Z_mesh is not None:
             try:
                 # Reuse the mesh from contour plot
                 fig_3d = go.Figure()
@@ -1212,71 +1425,6 @@ with tab4:
             except Exception as e:
                 st.error(f"Could not create 3D surface plot: {e}")
     
-    st.divider()
-    
-    # === Individual Factor Response Curves ===
-    st.markdown("### 📈 Individual Factor Effects")
-    st.caption("Response vs each factor (holding others at current settings).")
-    
-    # Show response curves for continuous factors
-    factor_cols = st.columns(min(3, len(continuous_factors)))
-    
-    for idx, factor in enumerate(continuous_factors):
-        with factor_cols[idx % len(factor_cols)]:
-            st.markdown(f"**{factor.name}**")
-            
-            try:
-                # Create range for this factor
-                f_min, f_max = factor.levels
-                f_range = np.linspace(f_min, f_max, 100)
-                
-                # Create prediction points
-                points = []
-                for val in f_range:
-                    point = factor_settings.copy()
-                    point[factor.name] = val
-                    points.append(point)
-                
-                points_df = pd.DataFrame(points)
-                predictions = results.fitted_model.predict(points_df)
-                
-                # Create line plot
-                fig = go.Figure()
-                
-                fig.add_trace(go.Scatter(
-                    x=f_range,
-                    y=predictions,
-                    mode='lines',
-                    line=dict(color=PLOT_COLORS['primary'], width=3),
-                    hovertemplate=f"{factor.name}: %{{x:.2f}}<br>{selected_response}: %{{y:.2f}}<extra></extra>"
-                ))
-                
-                # Mark current setting
-                current_val = factor_settings[factor.name]
-                current_pred = results.fitted_model.predict(pd.DataFrame([factor_settings]))[0]
-                
-                fig.add_trace(go.Scatter(
-                    x=[current_val],
-                    y=[current_pred],
-                    mode='markers',
-                    marker=dict(size=12, color='red', symbol='diamond'),
-                    name='Current',
-                    hovertemplate=f"{factor.name}: {current_val:.2f}<br>{selected_response}: {current_pred:.2f}<extra></extra>"
-                ))
-                
-                fig.update_layout(
-                    xaxis_title=factor.name,
-                    yaxis_title=selected_response,
-                    height=300,
-                    showlegend=False
-                )
-                
-                fig = apply_plot_style(fig)
-                st.plotly_chart(fig, use_container_width=True)
-                
-            except Exception as e:
-                st.error(f"Error plotting {factor.name}: {e}")
-
 st.divider()
 
 col1, col2, col3 = st.columns([1, 1, 1])

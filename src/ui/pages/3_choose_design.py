@@ -29,13 +29,45 @@ from src.ui.components.constraint_builder import (
 initialize_session_state()
 
 # Check access
-if not can_access_step(2):
-    st.warning("⚠️ Please define factors in Step 1 first")
+if not can_access_step(3):
+    st.warning("⚠️ Please complete Steps 1-2 first")
     st.stop()
 
-st.title("Step 2: Choose Design Type")
+st.title("Step 3: Choose Design Type")
 
 factors = st.session_state['factors']
+
+# Check if model is selected
+model_selected = 'model_terms' in st.session_state and st.session_state['model_terms']
+
+if not model_selected:
+    st.warning(
+        "⚠️ **No analysis model selected yet.** "
+        "Some design types (especially D-Optimal) require knowing the model upfront. "
+        "We recommend completing Step 2 first."
+    )
+    if st.button("← Return to Step 2: Select Model", type="primary"):
+        st.switch_page("pages/2_select_model.py")
+else:
+    # Show selected model
+    from src.ui.components.model_builder import format_full_equation
+    model_terms = st.session_state['model_terms']
+    equation = format_full_equation(model_terms, "Y")
+    
+    with st.expander("📋 Selected Model (from Step 2)", expanded=False):
+        st.markdown(f"**{equation}**")
+        st.caption(f"{len(model_terms)} terms to estimate")
+        
+        # Analyze model complexity for recommendations
+        has_quadratic = any(t.startswith('I(') and '**2' in t for t in model_terms)
+        has_interactions = any('*' in t and not t.startswith('I(') for t in model_terms)
+        
+        if has_quadratic:
+            st.info("💡 Your model includes quadratic terms - Response Surface designs (CCD/Box-Behnken) are recommended.")
+        elif has_interactions:
+            st.info("💡 Your model includes interactions - Full Factorial or D-Optimal designs work well.")
+        else:
+            st.info("💡 Your model is linear - Most design types will work.")
 
 st.markdown(f"""
 You have defined **{len(factors)} factors**. Now choose the design type that best suits your objectives.
@@ -256,6 +288,21 @@ if st.session_state.get('design_type'):
     elif design_type == "Fractional Factorial":
         st.markdown("**Fractional Factorial Configuration**")
         
+        # Check model compatibility
+        if model_selected:
+            model_terms = st.session_state['model_terms']
+            has_quadratic = any(t.startswith('I(') and '**2' in t for t in model_terms)
+            
+            if has_quadratic:
+                st.error(
+                    "⚠️ **Model Incompatibility:** Your selected model includes quadratic terms, "
+                    "but fractional factorial designs cannot estimate quadratic effects.\n\n"
+                    "**Recommendations:**\n"
+                    "1. Use Response Surface design (CCD or Box-Behnken) instead, OR\n"
+                    "2. Simplify model to remove quadratic terms (return to Step 2), OR\n"
+                    "3. Proceed anyway and modify model during analysis (Step 6)"
+                )
+        
         k = len(factors)
         
         # Fraction selection
@@ -382,16 +429,32 @@ if st.session_state.get('design_type'):
     elif design_type == "D-Optimal":
         st.markdown("**D-Optimal Design Configuration**")
         
-        # Model type
-        model_type = st.selectbox(
-            "Model Type",
-            ["Linear", "Interaction", "Quadratic"],
-            help="Determines model terms the design will support"
+        # Get model terms from Step 2
+        if 'model_terms' not in st.session_state or not st.session_state['model_terms']:
+            st.error("⚠️ No model defined. Please return to Step 2 to select analysis model.")
+            if st.button("← Go to Step 2: Select Model", type="primary"):
+                st.switch_page("pages/2_select_model.py")
+            st.stop()
+        
+        model_terms = st.session_state['model_terms']
+        
+        # Display selected model
+        from src.ui.components.model_builder import format_full_equation
+        equation = format_full_equation(model_terms, "Y")
+        
+        st.info(
+            f"🎯 **Selected Model (from Step 2):**\n\n"
+            f"{equation}\n\n"
+            f"This model has **{len(model_terms)} terms** to estimate. "
+            f"D-optimal design will be optimized for these exact terms."
         )
         
+        if st.button("✏️ Edit Model", key="edit_model_button"):
+            st.switch_page("pages/2_select_model.py")
+        
+        st.divider()
+        
         # Number of runs
-        from src.core.analysis import generate_model_terms
-        model_terms = generate_model_terms(factors, model_type.lower(), include_intercept=True)
         min_runs = len(model_terms)
         
         n_runs = st.number_input(
@@ -412,9 +475,9 @@ if st.session_state.get('design_type'):
         constraints = st.session_state.get('constraints', [])
         
         st.session_state['design_config'] = {
-            'model_type': model_type,
             'n_runs': n_runs,
-            'n_constraints': len(constraints)
+            'n_constraints': len(constraints),
+            'model_terms': model_terms  # Store for preview/generation
         }
         
         if constraints:
