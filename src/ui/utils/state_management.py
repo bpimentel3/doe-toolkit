@@ -90,7 +90,7 @@ def get_current_step() -> int:
 
 def set_current_step(step: int) -> None:
     """Set current workflow step."""
-    if 1 <= step <= 7:
+    if 1 <= step <= 8:
         st.session_state['current_step'] = step
 
 
@@ -101,7 +101,7 @@ def is_step_complete(step: int) -> bool:
     Parameters
     ----------
     step : int
-        Step number (1-7)
+        Step number (1-8)
     
     Returns
     -------
@@ -111,26 +111,34 @@ def is_step_complete(step: int) -> bool:
     if step == 1:  # Define Factors
         return len(st.session_state.get('factors', [])) > 0
     
-    elif step == 2:  # Choose Design
+    elif step == 2:  # Select Model
+        # Model selection is optional - consider complete if user proceeded
+        # OR if model_terms are defined
+        return (
+            st.session_state.get('model_terms') is not None or
+            st.session_state.get('design_type') is not None
+        )
+    
+    elif step == 3:  # Choose Design
         return st.session_state.get('design_type') is not None
     
-    elif step == 3:  # Preview Design
+    elif step == 4:  # Preview Design
         return st.session_state.get('design') is not None
     
-    elif step == 4:  # Import Results
+    elif step == 5:  # Import Results
         # FIXED: Check both responses dict AND design exists
-        # Allow step 4 to be complete if user imported CSV with auto-detect
+        # Allow step 5 to be complete if user imported CSV with auto-detect
         # which creates both design and responses simultaneously
         responses = st.session_state.get('responses', {})
         design = st.session_state.get('design')
         
-        # Step 4 is complete if we have responses AND design
+        # Step 5 is complete if we have responses AND design
         return (len(responses) > 0) and (design is not None)
     
-    elif step == 5:  # Analysis
+    elif step == 6:  # Analysis
         return len(st.session_state.get('fitted_models', {})) > 0
     
-    elif step == 6:  # Augmentation (optional)
+    elif step == 7:  # Augmentation (optional)
         # Augmentation is optional - considered complete if:
         # - User explicitly skipped, OR
         # - Plan was executed
@@ -139,7 +147,7 @@ def is_step_complete(step: int) -> bool:
             not st.session_state.get('show_augmentation', False)
         )
     
-    elif step == 7:  # Optimization
+    elif step == 8:  # Optimization
         return st.session_state.get('optimization_results') is not None
     
     return False
@@ -163,25 +171,25 @@ def can_access_step(step: int) -> bool:
     if step == 1:
         return True
     
-    # Step 4 can be accessed from home (auto-detect mode)
+    # Step 5 can be accessed from home (auto-detect mode)
     # This allows users to start by importing CSV
-    if step == 4:
+    if step == 5:
         return True
     
-    # For step 5 (Analyze), check if step 4 is complete
+    # For step 6 (Analyze), check if step 5 is complete
     # This is the critical fix - we need design AND responses
-    if step == 5:
-        return is_step_complete(4)
-    
-    # For step 6 (Augmentation), only requires design structure
-    # Analysis is helpful but not required - user can view design and decide to augment
     if step == 6:
+        return is_step_complete(5)
+    
+    # For step 7 (Augmentation), only requires design structure
+    # Analysis is helpful but not required - user can view design and decide to augment
+    if step == 7:
         return st.session_state.get('design') is not None
     
-    # For step 7 (Optimization), requires analysis to be complete
-    # Augmentation (step 6) is optional, so skip it
-    if step == 7:
-        return is_step_complete(5)
+    # For step 8 (Optimization), requires analysis to be complete
+    # Augmentation (step 7) is optional, so skip it
+    if step == 8:
+        return is_step_complete(6)
     
     # For other steps, all previous steps must be complete
     for i in range(1, step):
@@ -326,6 +334,7 @@ def get_workflow_progress() -> Dict[str, Any]:
     """
     steps = [
         "Define Factors",
+        "Select Model",
         "Choose Design",
         "Preview Design",
         "Import Results",
@@ -335,11 +344,11 @@ def get_workflow_progress() -> Dict[str, Any]:
     ]
     
     progress = {
-        'total_steps': 7,
+        'total_steps': 8,
         'current_step': get_current_step(),
         'steps': steps,
-        'completed': [is_step_complete(i) for i in range(1, 8)],
-        'accessible': [can_access_step(i) for i in range(1, 8)]
+        'completed': [is_step_complete(i) for i in range(1, 9)],
+        'accessible': [can_access_step(i) for i in range(1, 9)]
     }
     
     return progress

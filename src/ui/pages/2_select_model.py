@@ -79,7 +79,7 @@ with st.expander("📋 Defined Factors", expanded=False):
             "Categorical"
         )
         if f.is_continuous():
-            levels_str = f"[{f.continuous_range[0]}, {f.continuous_range[1]}]"
+            levels_str = f"[{f.levels[0]}, {f.levels[1]}]"
         else:
             levels_str = f"{len(f.levels)} levels"
         

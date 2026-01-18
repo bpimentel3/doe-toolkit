@@ -53,39 +53,45 @@ with st.sidebar:
     )
     
     st.page_link(
-        "pages/2_choose_design.py",
-        label="2. Choose Design",
+        "pages/2_select_model.py",
+        label="2. Select Model",
         disabled=not progress['accessible'][1]
     )
     
     st.page_link(
-        "pages/3_preview_design.py",
-        label="3. Preview Design",
+        "pages/3_choose_design.py",
+        label="3. Choose Design",
         disabled=not progress['accessible'][2]
     )
     
     st.page_link(
-        "pages/4_import_results.py",
-        label="4. Import Results"
+        "pages/4_preview_design.py",
+        label="4. Preview Design",
+        disabled=not progress['accessible'][3]
+    )
+    
+    st.page_link(
+        "pages/5_import_results.py",
+        label="5. Import Results"
         # NO disabled - always accessible
     )
     
     st.page_link(
-        "pages/5_analyze.py",
-        label="5. Analyze",
-        disabled=not progress['accessible'][4]
-    )
-    
-    st.page_link(
-        "pages/6_augmentation.py",
-        label="6. Augmentation",
+        "pages/6_analyze.py",
+        label="6. Analyze",
         disabled=not progress['accessible'][5]
     )
     
     st.page_link(
-        "pages/7_optimize.py",
-        label="7. Optimize",
+        "pages/7_augmentation.py",
+        label="7. Augmentation",
         disabled=not progress['accessible'][6]
+    )
+    
+    st.page_link(
+        "pages/8_optimize.py",
+        label="8. Optimize",
+        disabled=not progress['accessible'][7]
     )
     
     st.markdown("---")
@@ -188,10 +194,12 @@ with col1:
     **Traditional Workflow**
     
     1. Define your experimental factors
-    2. Generate an optimal design
-    3. Run experiments
-    4. Import results
-    5. Analyze and optimize
+    2. Select model terms
+    3. Generate an optimal design
+    4. Preview and export design
+    5. Run experiments
+    6. Import results
+    7. Analyze and optimize
     """)
     
     if st.button("1️⃣ Define Factors →", type="primary", use_container_width=True):
@@ -213,9 +221,9 @@ with col2:
     5. Optimize
     """)
     
-    if st.button("4️⃣ Import Data →", type="primary", use_container_width=True):
-        st.session_state['current_step'] = 4
-        st.switch_page("pages/4_import_results.py")
+    if st.button("5️⃣ Import Data →", type="primary", use_container_width=True):
+        st.session_state['current_step'] = 5
+        st.switch_page("pages/5_import_results.py")
     
     st.caption("Best for: Existing data, completed experiments")
 
@@ -237,6 +245,7 @@ if any(progress['completed']):
     if next_step:
         step_names = [
             "Define Factors",
+            "Select Model",
             "Choose Design",
             "Preview Design", 
             "Import Results",
@@ -252,7 +261,7 @@ if any(progress['completed']):
             
             # Show progress
             completed_count = sum(progress['completed'])
-            st.progress(completed_count / 7, text=f"{completed_count}/7 steps complete")
+            st.progress(completed_count / 8, text=f"{completed_count}/8 steps complete")
         
         with col2:
             st.markdown("")  # Spacer
@@ -260,12 +269,13 @@ if any(progress['completed']):
         with col3:
             pages = [
                 "pages/1_define_factors.py",
-                "pages/2_choose_design.py",
-                "pages/3_preview_design.py",
-                "pages/4_import_results.py",
-                "pages/5_analyze.py",
-                "pages/6_augmentation.py",
-                "pages/7_optimize.py"
+                "pages/2_select_model.py",
+                "pages/3_choose_design.py",
+                "pages/4_preview_design.py",
+                "pages/5_import_results.py",
+                "pages/6_analyze.py",
+                "pages/7_augmentation.py",
+                "pages/8_optimize.py"
             ]
             
             if st.button(f"Continue to Step {next_step} →", type="primary", use_container_width=True):
