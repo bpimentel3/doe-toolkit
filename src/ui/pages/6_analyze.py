@@ -1485,18 +1485,18 @@ col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
     if st.button("← Back to Import", use_container_width=True):
-        st.session_state['current_step'] = 4
-        st.switch_page("pages/4_import_results.py")
+        st.session_state['current_step'] = 5
+        st.switch_page("pages/5_import_results.py")
 
 with col2:
     if st.session_state.get('quality_report'):
         if st.session_state['quality_report'].summary.needs_any_augmentation():
             if st.button("🔬 Augmentation", type="primary", use_container_width=True):
-                st.session_state['current_step'] = 6
+                st.session_state['current_step'] = 7
                 st.session_state['show_augmentation'] = True
-                st.switch_page("pages/6_augmentation.py")
+                st.switch_page("pages/7_augmentation.py")
 
 with col3:
     if st.button("Optimize →", use_container_width=True):
-        st.session_state['current_step'] = 7
-        st.switch_page("pages/7_optimize.py")
+        st.session_state['current_step'] = 8
+        st.switch_page("pages/8_optimize.py")

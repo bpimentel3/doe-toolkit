@@ -642,13 +642,13 @@ else:
     
     with col2:
         if st.button("← Back to Configuration", use_container_width=True):
-            st.session_state['current_step'] = 2
-            st.switch_page("pages/2_choose_design.py")
+            st.session_state['current_step'] = 3
+            st.switch_page("pages/3_choose_design.py")
     
     with col3:
         if st.button("Import Results →", type="primary", use_container_width=True):
-            st.session_state['current_step'] = 4
-            st.switch_page("pages/4_import_results.py")
+            st.session_state['current_step'] = 5
+            st.switch_page("pages/5_import_results.py")
 
 # Navigation
 if st.session_state.get('design') is None:
@@ -658,5 +658,5 @@ if st.session_state.get('design') is None:
     
     with col1:
         if st.button("← Back to Configuration", use_container_width=True):
-            st.session_state['current_step'] = 2
-            st.switch_page("pages/2_choose_design.py")
+            st.session_state['current_step'] = 3
+            st.switch_page("pages/3_choose_design.py")

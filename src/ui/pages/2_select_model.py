@@ -212,13 +212,8 @@ from src.ui.components.model_builder import format_full_equation
 
 equation = format_full_equation(terms, "Y")
 
-st.markdown(f"""
-<div style='background-color: #f0f0f0; padding: 20px; border-radius: 5px; border-left: 4px solid #1f77b4;'>
-<p style='font-size: 1.8em; margin: 0; text-align: center;'>
-<em>{equation}</em>
-</p>
-</div>
-""", unsafe_allow_html=True)
+# Display equation in a clean info box (matches analyze page style)
+st.info(f"**Model Equation:**\n\n{equation}", icon="📐")
 
 st.caption("""
 This model will be used to:

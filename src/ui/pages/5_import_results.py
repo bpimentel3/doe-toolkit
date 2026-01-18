@@ -329,10 +329,10 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     if st.button("← Back to Design", use_container_width=True):
-        st.switch_page("pages/3_preview_design.py")
+        st.switch_page("pages/4_preview_design.py")
 
 with col3:
     if st.session_state.get('responses'):
         if st.button("Analyze Results →", type="primary", use_container_width=True):
-            st.session_state['current_step'] = 5
-            st.switch_page("pages/5_analyze.py")
+            st.session_state['current_step'] = 6
+            st.switch_page("pages/6_analyze.py")
