@@ -137,6 +137,7 @@ if uploaded_file:
                 
                 if responses:
                     st.session_state['responses'] = responses
+                    st.session_state['response_names'] = list(responses.keys())
                     st.success(f"✓ Imported {len(parse_result.factors)} factors, {len(responses)} responses")
                 else:
                     st.warning("⚠️ No response data found in CSV (empty columns)")
@@ -180,12 +181,13 @@ if uploaded_file:
                             if col_data.notna().any():
                                 responses[col] = col_data.values
                     
-                    if responses:
-                        st.session_state['responses'] = responses
-                        st.session_state['response_definitions'] = parse_result.response_definitions
-                        st.success(f"✓ Imported {len(responses)} response(s)")
-                    else:
-                        st.warning("No response data in CSV")
+                        if responses:
+                            st.session_state['responses'] = responses
+                            st.session_state['response_names'] = list(responses.keys())
+                            st.session_state['response_definitions'] = parse_result.response_definitions
+                            st.success(f"✓ Imported {len(responses)} response(s)")
+                        else:
+                            st.warning("No response data in CSV")
                     
                     st.rerun()
             
@@ -251,6 +253,7 @@ if uploaded_file:
                         
                         if responses:
                             st.session_state['responses'] = responses
+                            st.session_state['response_names'] = list(responses.keys())
                             st.session_state['response_definitions'] = parse_result.response_definitions
                             st.success(f"✓ Replaced factors and imported {len(responses)} response(s)")
                         
@@ -271,6 +274,7 @@ if uploaded_file:
                         
                         if responses:
                             st.session_state['responses'] = responses
+                            st.session_state['response_names'] = list(responses.keys())
                             st.session_state['response_definitions'] = parse_result.response_definitions
                             st.success(f"✓ Imported {len(responses)} response(s) (factors unchanged)")
                         else:
@@ -281,6 +285,13 @@ if uploaded_file:
     else:
         # FALLBACK: Plain CSV without metadata
         st.warning("⚠️ CSV format not recognized as DOE-Toolkit metadata format")
+        
+        # Show parse error for debugging
+        if parse_result.error:
+            with st.expander("🔍 Parse Error Details", expanded=False):
+                st.error(f"**Error:** {parse_result.error}")
+                st.caption("If you believe this is a valid DOE-Toolkit format file, please report this issue.")
+        
         st.info("Attempting to parse as plain CSV...")
         
         try:
@@ -313,6 +324,7 @@ if uploaded_file:
                 
                 if responses and st.button("✅ Import as Responses", type="primary", use_container_width=True):
                     st.session_state['responses'] = responses
+                    st.session_state['response_names'] = list(responses.keys())
                     st.success(f"✓ Imported {len(responses)} response(s)")
                     st.rerun()
             

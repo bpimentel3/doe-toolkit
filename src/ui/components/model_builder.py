@@ -592,12 +592,15 @@ def display_stepwise_button(
             )
         
         # Run stepwise selection
+        # NOTE: Patsy requires at least one predictor, so start with intercept + first main effect
+        starting_terms = ['1', factor_names[0]]  # Intercept + first factor
+        
         with st.spinner("Running stepwise regression..."):
             try:
                 results = stepwise_selection(
                     anova_analysis=anova_analysis,
                     all_possible_terms=all_terms,
-                    starting_terms=['1'],  # Start with intercept only
+                    starting_terms=starting_terms,
                     mandatory_terms=['1'],  # Intercept must stay
                     max_iterations=max_iter,
                     bic_threshold=bic_threshold,

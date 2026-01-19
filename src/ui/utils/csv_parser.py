@@ -143,6 +143,8 @@ def extract_metadata_block(lines: List[str]) -> Dict[str, str]:
         if match:
             key = match.group(1).strip().lower().replace(" ", "_")
             value = match.group(2).strip()
+            # Remove trailing commas from value
+            value = value.rstrip(',')
             metadata[key] = value
 
     return metadata
@@ -195,7 +197,8 @@ def extract_factor_definitions(lines: List[str]) -> List[Factor]:
         if "Name,Type" in line:
             header_found = True
             continue
-        if not line.strip() or line.strip() == "#":
+        # Empty comment line (with or without trailing commas)
+        if line.lstrip('#').strip().replace(',', '') == '':
             continue
 
         # Parse factor line
@@ -237,7 +240,12 @@ def _parse_factor_line(line: str) -> Factor:
     # Remove comment prefix
     content = line.lstrip("#").strip()
 
+    # Split and filter out empty trailing fields (from trailing commas)
     parts = [p.strip() for p in content.split(",")]
+    # Remove trailing empty strings but keep intentional empty units field
+    while len(parts) > 4 and parts[-1] == '':
+        parts.pop()
+    
     if len(parts) < 4:
         raise ValueError(f"Expected at least 4 fields, got {len(parts)}")
 
@@ -247,7 +255,7 @@ def _parse_factor_line(line: str) -> Factor:
         parts[2],
         parts[3],
     )
-    units = parts[4] if len(parts) > 4 else None
+    units = parts[4] if len(parts) > 4 and parts[4] else None
 
     # Validate and convert type
     try:
@@ -355,18 +363,23 @@ def extract_response_definitions(lines: List[str]) -> List[Dict[str, Optional[st
         if "Name,Units" in line:
             header_found = True
             continue
-        if not line.strip() or line.strip() == "#":
+        # Empty comment line (with or without trailing commas)
+        if line.lstrip('#').strip().replace(',', '') == '':
             continue
 
         # Parse response line
         content = line.lstrip("#").strip()
         parts = [p.strip() for p in content.split(",")]
+        
+        # Remove trailing empty fields
+        while len(parts) > 1 and parts[-1] == '':
+            parts.pop()
 
         if len(parts) < 1:
             continue
 
         name = parts[0]
-        units = parts[1] if len(parts) > 1 else None
+        units = parts[1] if len(parts) > 1 and parts[1] else None
 
         responses.append({"name": name, "units": units if units else None})
 

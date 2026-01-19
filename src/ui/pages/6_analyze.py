@@ -336,11 +336,17 @@ st.title("Step 5: Analyze Experimental Results")
 
 design = get_active_design()
 factors = st.session_state['factors']
-responses = st.session_state['responses']
-response_names = st.session_state['response_names']
+responses = st.session_state.get('responses', {})
 
-if not responses:
-    st.error("No response data available. Please import data in Step 4.")
+# Get response names - fallback to keys if response_names not set
+response_names = st.session_state.get('response_names', list(responses.keys()) if responses else [])
+
+# Update response_names in session state if it was missing
+if responses and not st.session_state.get('response_names'):
+    st.session_state['response_names'] = list(responses.keys())
+
+if not responses or not response_names:
+    st.error("No response data available. Please import data in Step 5 (Import Results).")
     st.stop()
 
 st.subheader("📊 Response Selection")
@@ -348,6 +354,11 @@ st.subheader("📊 Response Selection")
 selected_response = st.selectbox(
     "Select Response to Analyze", response_names, key='analysis_response_selector'
 )
+
+# Guard against None selection
+if selected_response is None:
+    st.error("⚠️ No response selected. Please select a response from the dropdown.")
+    st.stop()
 
 st.divider()
 
@@ -411,6 +422,42 @@ if updated_terms != current_terms:
     st.session_state['model_terms_per_response'][selected_response] = updated_terms
     invalidate_downstream_state(from_step=5)
     st.rerun()
+
+# Display stepwise regression button (before model fitting)
+# Only show after first model is fitted
+if selected_response in st.session_state.get('fitted_models', {}):
+    # Get the current analysis object for stepwise
+    current_analysis = None
+    try:
+        response_data = responses[selected_response]
+        
+        if st.session_state['excluded_rows']:
+            mask = np.ones(len(design), dtype=bool)
+            mask[st.session_state['excluded_rows']] = False
+            design_filtered = design[mask].reset_index(drop=True)
+            response_filtered = response_data[mask]
+        else:
+            design_filtered = design
+            response_filtered = response_data
+        
+        current_analysis = ANOVAAnalysis(
+            design=design_filtered, response=response_filtered,
+            factors=factors, response_name=selected_response
+        )
+    except:
+        current_analysis = None
+    
+    stepwise_results = display_stepwise_button(
+        factors=factors,
+        anova_analysis=current_analysis,
+        key_prefix=f"stepwise_{selected_response}"
+    )
+    
+    # If stepwise returned results, update model terms
+    if stepwise_results is not None:
+        st.session_state['model_terms_per_response'][selected_response] = stepwise_results.final_terms
+        invalidate_downstream_state(from_step=5)
+        st.rerun()
 
 st.divider()
 
