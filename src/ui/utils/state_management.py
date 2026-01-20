@@ -81,6 +81,13 @@ def initialize_session_state() -> None:
     # Navigation
     if 'current_step' not in st.session_state:
         st.session_state['current_step'] = 1
+    
+    # Export controls
+    if 'show_save_project' not in st.session_state:
+        st.session_state['show_save_project'] = False
+    
+    if 'show_generate_report' not in st.session_state:
+        st.session_state['show_generate_report'] = False
 
 
 def get_current_step() -> int:
@@ -427,6 +434,13 @@ def create_project_file() -> str:
     """
     Create project file (JSON) from current session state.
     
+    Captures complete project state including:
+    - Factors, design, and design metadata
+    - Responses and model terms
+    - Augmentation plans and augmented designs
+    - Optimization results
+    - Diagnostics and quality reports
+    
     Returns
     -------
     str
@@ -471,6 +485,51 @@ def create_project_file() -> str:
     # Add model terms if fitted
     if st.session_state.get('model_terms_per_response'):
         project['model_terms_per_response'] = st.session_state['model_terms_per_response']
+    
+    # Add excluded rows if any
+    if st.session_state.get('excluded_rows'):
+        project['excluded_rows'] = st.session_state['excluded_rows']
+    
+    # Add augmentation data if exists
+    if st.session_state.get('augmented_design') is not None:
+        augmented = st.session_state['augmented_design']
+        project['augmented_design'] = {
+            'combined_design': augmented.combined_design.to_dict('records'),
+            'new_runs_only': augmented.new_runs_only.to_dict('records'),
+            'block_column': augmented.block_column,
+            'n_runs_original': augmented.n_runs_original,
+            'n_runs_added': augmented.n_runs_added,
+            'n_runs_total': augmented.n_runs_total,
+            'achieved_improvements': augmented.achieved_improvements,
+            'resolution': augmented.resolution,
+            'd_efficiency': augmented.d_efficiency,
+            'condition_number': augmented.condition_number
+        }
+    
+    # Add selected augmentation plan metadata if exists
+    if st.session_state.get('selected_plan') is not None:
+        plan = st.session_state['selected_plan']
+        project['selected_augmentation_plan'] = {
+            'plan_id': plan.plan_id,
+            'plan_name': plan.plan_name,
+            'strategy': plan.strategy,
+            'n_runs_to_add': plan.n_runs_to_add,
+            'expected_improvements': plan.expected_improvements
+        }
+    
+    # Add optimization results if exists
+    if st.session_state.get('optimization_results') is not None:
+        opt_result = st.session_state['optimization_results']
+        project['optimization_results'] = {
+            'optimal_settings': opt_result.optimal_settings,
+            'predicted_response': opt_result.predicted_response,
+            'confidence_interval': opt_result.confidence_interval,
+            'prediction_interval': opt_result.prediction_interval,
+            'objective_value': opt_result.objective_value,
+            'n_iterations': opt_result.n_iterations,
+            'success': opt_result.success,
+            'message': opt_result.message
+        }
     
     return json.dumps(project, indent=2)
 

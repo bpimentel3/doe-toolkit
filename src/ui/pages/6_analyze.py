@@ -423,42 +423,6 @@ if updated_terms != current_terms:
     invalidate_downstream_state(from_step=5)
     st.rerun()
 
-# Display stepwise regression button (before model fitting)
-# Only show after first model is fitted
-if selected_response in st.session_state.get('fitted_models', {}):
-    # Get the current analysis object for stepwise
-    current_analysis = None
-    try:
-        response_data = responses[selected_response]
-        
-        if st.session_state['excluded_rows']:
-            mask = np.ones(len(design), dtype=bool)
-            mask[st.session_state['excluded_rows']] = False
-            design_filtered = design[mask].reset_index(drop=True)
-            response_filtered = response_data[mask]
-        else:
-            design_filtered = design
-            response_filtered = response_data
-        
-        current_analysis = ANOVAAnalysis(
-            design=design_filtered, response=response_filtered,
-            factors=factors, response_name=selected_response
-        )
-    except:
-        current_analysis = None
-    
-    stepwise_results = display_stepwise_button(
-        factors=factors,
-        anova_analysis=current_analysis,
-        key_prefix=f"stepwise_{selected_response}"
-    )
-    
-    # If stepwise returned results, update model terms
-    if stepwise_results is not None:
-        st.session_state['model_terms_per_response'][selected_response] = stepwise_results.final_terms
-        invalidate_downstream_state(from_step=5)
-        st.rerun()
-
 st.divider()
 
 st.sidebar.header("Advanced Options")
@@ -1526,6 +1490,22 @@ with tab4:
             except Exception as e:
                 st.error(f"Could not create 3D surface plot: {e}")
     
+# ==== STEPWISE REGRESSION BUTTON ====
+# Display after model fitting is complete
+st.divider()
+
+stepwise_results = display_stepwise_button(
+    factors=factors,
+    anova_analysis=analysis,  # Use the analysis object from model fitting above
+    key_prefix=f"stepwise_{selected_response}"
+)
+
+# If stepwise returned results, update model terms
+if stepwise_results is not None:
+    st.session_state['model_terms_per_response'][selected_response] = stepwise_results.final_terms
+    invalidate_downstream_state(from_step=5)
+    st.rerun()
+
 st.divider()
 
 col1, col2, col3 = st.columns([1, 1, 1])

@@ -94,33 +94,7 @@ with st.sidebar:
         disabled=not progress['accessible'][7]
     )
     
-    st.markdown("---")
-    
-    # Project file management
-    st.markdown("### 💾 Project")
-    
-    if st.sidebar.button("💾 Save Project", use_container_width=True):
-        st.session_state['show_save_project'] = True
-    
-    if st.session_state.get('show_save_project'):
-        try:
-            from src.ui.utils.state_management import create_project_file
-            from datetime import datetime
-            
-            project_json = create_project_file()
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            st.sidebar.download_button(
-                "📥 Download .doeproject",
-                data=project_json,
-                file_name=f"doe_project_{timestamp}.doeproject",
-                mime="application/json",
-                use_container_width=True
-            )
-            st.sidebar.success("✓ Ready to download!")
-        except Exception as e:
-            st.sidebar.error(f"Save failed: {e}")
-    
+    # Load project at top of sidebar (before workflow)
     uploaded_project = st.sidebar.file_uploader(
         "📂 Load Project",
         type=['doeproject', 'json'],
@@ -138,6 +112,65 @@ with st.sidebar:
             st.rerun()
         except Exception as e:
             st.sidebar.error(f"Load failed: {e}")
+    
+    st.markdown("---")
+    
+    # Export section at bottom of sidebar
+    st.sidebar.markdown("### 📤 Export")
+    
+    # Save Project button
+    if st.sidebar.button("💾 Save Project File", use_container_width=True):
+        st.session_state['show_save_project'] = True
+    
+    if st.session_state.get('show_save_project'):
+        try:
+            from src.ui.utils.state_management import create_project_file
+            from datetime import datetime
+            
+            project_json = create_project_file()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            st.sidebar.download_button(
+                "📥 Download .doeproject",
+                data=project_json,
+                file_name=f"doe_project_{timestamp}.doeproject",
+                mime="application/json",
+                use_container_width=True,
+                key="download_project"
+            )
+            st.sidebar.success("✓ Ready to download!")
+        except Exception as e:
+            st.sidebar.error(f"Save failed: {e}")
+    
+    # Generate Report button
+    if st.sidebar.button("📄 Generate HTML Report", use_container_width=True):
+        st.session_state['show_generate_report'] = True
+    
+    if st.session_state.get('show_generate_report'):
+        try:
+            from src.ui.utils.export import generate_html_report
+            from datetime import datetime
+            
+            # Check if there's enough data to generate report
+            if not st.session_state.get('factors'):
+                st.sidebar.warning("⚠️ No data to export. Define factors first.")
+            else:
+                with st.spinner("Generating report..."):
+                    html_report = generate_html_report()
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    st.sidebar.download_button(
+                        "📥 Download Report.html",
+                        data=html_report,
+                        file_name=f"doe_report_{timestamp}.html",
+                        mime="text/html",
+                        use_container_width=True,
+                        key="download_report"
+                    )
+                    st.sidebar.success("✓ Report ready!")
+        except Exception as e:
+            st.sidebar.error(f"Report generation failed: {e}")
+            st.sidebar.exception(e)
     
     st.markdown("---")
     

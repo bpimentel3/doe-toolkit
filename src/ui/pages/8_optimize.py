@@ -249,7 +249,9 @@ if optimization_mode == 'single':
                         
                         # Predict
                         results = fitted_models[primary_response]
-                        Z_pred = results.fitted_model.predict(grid_design).reshape(X.shape)
+                        predictions = results.fitted_model.predict(grid_design)
+                        # Convert Series to numpy array before reshape
+                        Z_pred = np.array(predictions).reshape(X.shape)
                         
                         # Plot
                         fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z_pred)])
@@ -310,7 +312,9 @@ if optimization_mode == 'single':
                                     grid_design[factor.name] = (factor.min_value + factor.max_value) / 2
                         
                         results = fitted_models[primary_response]
-                        Z_pred = results.fitted_model.predict(grid_design).reshape(X.shape)
+                        predictions = results.fitted_model.predict(grid_design)
+                        # Convert Series to numpy array before reshape
+                        Z_pred = np.array(predictions).reshape(X.shape)
                         
                         fig = go.Figure(data=go.Contour(x=x_vals, y=y_vals, z=Z_pred))
                         
