@@ -781,35 +781,51 @@ def cexch_optimize(
     candidates: np.ndarray,
     n_runs: int,
     model_builder: ModelMatrixBuilder,
+    criterion: OptimalityCriterion,
     config: OptimizerConfig,
     seed: Optional[int] = None
 ) -> Tuple[np.ndarray, float, int, str]:
     """
-    Fast CEXCH optimizer with Sherman-Morrison intermediate reuse.
+    Coordinate exchange optimizer supporting any optimality criterion.
+    
+    This function implements the Meyer & Nachtsheim coordinate exchange
+    algorithm (CEXCH), generalized to work with any optimality criterion
+    (D-optimal, I-optimal, etc.) through the criterion object's objective()
+    method.
     
     Parameters
     ----------
     candidates : np.ndarray, shape (N_cand, k)
-        Feasible candidate points
+        Feasible candidate points in coded space
     n_runs : int
         Number of runs to select
     model_builder : ModelMatrixBuilder
-        Model matrix builder
+        Function to build model matrix from factor settings
+    criterion : OptimalityCriterion
+        Optimality criterion object with objective() method
     config : OptimizerConfig
         Optimization configuration
     seed : int, optional
-        Random seed
+        Random seed for reproducibility
     
     Returns
     -------
-    best_indices : np.ndarray
-        Indices into candidates
-    best_logdet : float
-        Final log-determinant
+    best_indices : np.ndarray, shape (n_runs,)
+        Indices into candidates array for selected design points
+    best_objective : float
+        Final objective value (criterion-specific)
     n_iterations : int
-        Iterations performed
+        Number of iterations performed
     converged_by : str
-        Convergence reason
+        Convergence reason ('stability', 'max_iterations')
+    
+    Notes
+    -----
+    The algorithm uses Sherman-Morrison updates when beneficial:
+    - For D-optimal: det ratio directly computed
+    - For I-optimal: updated (X'X)^(-1) reused for trace computation
+    
+    Multiple random starts prevent local optima.
     """
     rng = np.random.default_rng(seed)
     N_cand = len(candidates)
