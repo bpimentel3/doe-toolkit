@@ -15,7 +15,6 @@ import pandas as pd
 
 from src.ui.utils.state_management import (
     initialize_session_state,
-    is_step_complete,
     can_access_step,
     invalidate_downstream_state
 )
@@ -27,6 +26,10 @@ from src.ui.components.constraint_builder import (
 
 # Initialize state
 initialize_session_state()
+
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
 
 # Check access
 if not can_access_step(3):
@@ -172,8 +175,6 @@ for design_name, design_info in design_options.items():
             
             if st.button(f"Select {design_name}", key=f"select_{design_name}", disabled=is_selected, type="primary" if not is_selected else "secondary"):
                 design_choice = design_name
-                # Set flag to scroll after rerun
-                st.session_state['scroll_to_config'] = True
     else:
         with st.expander(f"🔒 {design_name} (Not Available)", expanded=False):
             st.markdown(f"**{design_info['description']}**")
@@ -198,47 +199,7 @@ if design_choice:
 
 # If design already selected, show configuration
 if st.session_state.get('design_type'):
-    # Add spacer to help with scrolling visibility
-    st.markdown("<br>", unsafe_allow_html=True)
-    
     st.divider()
-    
-    # Visual indicator when just selected
-    if st.session_state.get('scroll_to_config', False):
-        # Add attention-grabbing banner
-        st.markdown(
-            f"""
-            <div style="
-                background: linear-gradient(90deg, #4CAF50 0%, #45a049 100%);
-                color: white;
-                padding: 20px;
-                border-radius: 10px;
-                text-align: center;
-                font-size: 18px;
-                font-weight: bold;
-                margin-bottom: 20px;
-                animation: slideDown 0.5s ease-out;
-            ">
-                ✅ {st.session_state['design_type']} Selected! Configure Options Below ⬇️
-            </div>
-            <style>
-                @keyframes slideDown {{
-                    from {{
-                        opacity: 0;
-                        transform: translateY(-20px);
-                    }}
-                    to {{
-                        opacity: 1;
-                        transform: translateY(0);
-                    }}
-                }}
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        # Reset flag
-        st.session_state['scroll_to_config'] = False
-    
     st.subheader(f"⚙️ Configure {st.session_state['design_type']}")
     
     design_type = st.session_state['design_type']

@@ -59,6 +59,10 @@ def _validate_response_name(name: str, existing_responses: list) -> bool:
 # Initialize state
 initialize_session_state()
 
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
+
 # Check access
 if not can_access_step(3):
     st.warning("⚠️ Please complete Steps 1-2 first")

@@ -28,6 +28,10 @@ from src.core.factors import (
 # Initialize state
 initialize_session_state()
 
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
+
 st.title("Step 1: Define Experimental Factors")
 
 st.markdown("""
@@ -103,41 +107,27 @@ def dataframe_to_factors(df: pd.DataFrame) -> tuple[List[Factor], List[str]]:
     
     for idx, row in df.iterrows():
         try:
-            # Sanitize name - handle various string representations
+            # Get and sanitize name
             name_raw = str(row['Name']).strip()
-            
-            # Remove brackets/quotes that might be added by pandas or string conversion
-            # Common artifacts: ['Name'], ["Name"], "['Name']"
-            name_raw = name_raw.strip("[]'\"")
-            name_raw = name_raw.strip()  # Strip again after bracket removal
             
             if not name_raw or name_raw.lower() in ['nan', 'none', '']:
                 errors.append(f"Row {idx+1}: Name cannot be empty")
                 continue
             
-            # Clean name for comparison
+            # Sanitize name and track changes
             clean_name, was_modified = sanitize_factor_name(name_raw)
             
-            # Only show sanitization warning if actually modified
-            # (not just from pandas string conversion artifacts)
             if was_modified:
-                # Double-check: was it only artifacts being stripped?
-                recheck_name = name_raw.strip("[]'\"")
-                _, recheck_modified = sanitize_factor_name(recheck_name)
-                
-                if recheck_modified:
-                    report = get_sanitization_report(name_raw)
-                    sanitization_warnings.append({
-                        'row': idx + 1,
-                        'original': name_raw,
-                        'sanitized': clean_name,
-                        'changes': report['changes']
-                    })
+                report = get_sanitization_report(name_raw)
+                sanitization_warnings.append({
+                    'row': idx + 1,
+                    'original': name_raw,
+                    'sanitized': clean_name,
+                    'changes': report['changes']
+                })
             
             # Parse type
-            factor_type_str = str(row['Type']).strip()
-            # Remove brackets/quotes that might be added by pandas
-            factor_type_str = factor_type_str.strip("[]'\"").lower()
+            factor_type_str = str(row['Type']).strip().lower()
             
             if factor_type_str == 'continuous':
                 factor_type = FactorType.CONTINUOUS
@@ -175,8 +165,6 @@ def dataframe_to_factors(df: pd.DataFrame) -> tuple[List[Factor], List[str]]:
             else:
                 # Discrete or categorical - ignore Min/Max columns
                 levels_str = str(row['Levels']).strip()
-                # Remove brackets/quotes that might be added by pandas
-                levels_str = levels_str.strip("[]'\"")
                 
                 if not levels_str or levels_str.lower() in ['nan', 'none', '']:
                     errors.append(f"Row {idx+1} ({clean_name}): Levels required for {factor_type.value}")
@@ -198,9 +186,7 @@ def dataframe_to_factors(df: pd.DataFrame) -> tuple[List[Factor], List[str]]:
                         continue
             
             # Parse changeability
-            change_str = str(row['Changeability']).strip()
-            # Remove brackets/quotes that might be added by pandas
-            change_str = change_str.strip("[]'\"").lower()
+            change_str = str(row['Changeability']).strip().lower()
             
             if change_str == 'easy':
                 changeability = ChangeabilityLevel.EASY
@@ -213,8 +199,6 @@ def dataframe_to_factors(df: pd.DataFrame) -> tuple[List[Factor], List[str]]:
             
             # Units
             units = str(row['Units']).strip()
-            # Remove brackets/quotes
-            units = units.strip("[]'\"")
             units = units if units and units.lower() not in ['nan', 'none', ''] else None
             
             # Create factor

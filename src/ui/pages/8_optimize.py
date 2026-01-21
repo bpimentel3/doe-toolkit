@@ -28,6 +28,10 @@ from src.ui.utils.state_management import (
 # Initialize state
 initialize_session_state()
 
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
+
 # Check access
 if not can_access_step(7):
     st.warning("⚠️ Please complete Steps 1-6 first")

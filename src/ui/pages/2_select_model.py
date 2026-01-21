@@ -14,7 +14,6 @@ sys.path.insert(0, str(project_root))
 import streamlit as st
 from src.ui.utils.state_management import (
     initialize_session_state,
-    is_step_complete,
     can_access_step,
     invalidate_downstream_state
 )
@@ -30,6 +29,10 @@ st.set_page_config(
 
 # Initialize session state
 initialize_session_state()
+
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
 
 # ==================== ACCESS CONTROL ====================
 

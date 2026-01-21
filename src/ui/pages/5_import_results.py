@@ -36,8 +36,61 @@ from src.ui.utils.csv_parser import (
     CSVParseError
 )
 
+
+def extract_responses_from_design(
+    design_data: pd.DataFrame,
+    factors: List[Factor],
+    response_definitions: Optional[List[Dict]] = None
+) -> Dict[str, np.ndarray]:
+    """
+    Extract response columns from design DataFrame.
+    
+    Parameters
+    ----------
+    design_data : pd.DataFrame
+        Design with factor and response columns
+    factors : List[Factor]
+        Factor definitions to exclude from responses
+    response_definitions : Optional[List[Dict]]
+        Optional list of response definitions to filter
+    
+    Returns
+    -------
+    Dict[str, np.ndarray]
+        Mapping of response names to data arrays
+    """
+    factor_names = {f.name for f in factors}
+    meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
+    
+    # Get expected response names if provided
+    if response_definitions:
+        response_names = {r['name'] for r in response_definitions}
+    else:
+        response_names = None
+    
+    responses = {}
+    for col in design_data.columns:
+        # Skip factor and metadata columns
+        if col in factor_names or col in meta_cols:
+            continue
+        
+        # If response names specified, only include those
+        if response_names is not None and col not in response_names:
+            continue
+        
+        # Extract non-empty data
+        col_data = design_data[col]
+        if col_data.notna().any():
+            responses[col] = col_data.values
+    
+    return responses
+
 # Initialize state
 initialize_session_state()
+
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
 
 st.title("Step 4: Import Experimental Results")
 
@@ -121,19 +174,12 @@ if uploaded_file:
                 st.session_state['response_definitions'] = parse_result.response_definitions
                 st.session_state['design_metadata'] = parse_result.metadata
                 
-                # Extract responses from design data (columns not in factors or metadata)
-                factor_names = {f.name for f in parse_result.factors}
-                meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
-                response_names = {r['name'] for r in parse_result.response_definitions}
-                
-                responses = {}
-                for col in parse_result.design_data.columns:
-                    if col not in factor_names and col not in meta_cols and col in response_names:
-                        # Extract response data (skip empty values)
-                        col_data = parse_result.design_data[col]
-                        # Only add if has non-empty values
-                        if col_data.notna().any():
-                            responses[col] = col_data.values
+                # Extract responses using helper function
+                responses = extract_responses_from_design(
+                    parse_result.design_data,
+                    parse_result.factors,
+                    parse_result.response_definitions
+                )
                 
                 if responses:
                     st.session_state['responses'] = responses
@@ -170,24 +216,20 @@ if uploaded_file:
                 
                 # Import button
                 if st.button("✅ Import Results (Keep Factors)", type="primary", use_container_width=True):
-                    # Extract responses
-                    factor_names = {f.name for f in st.session_state['factors']}
-                    meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
+                    # Extract responses using helper function
+                    responses = extract_responses_from_design(
+                        parse_result.design_data,
+                        st.session_state['factors'],
+                        parse_result.response_definitions
+                    )
                     
-                    responses = {}
-                    for col in parse_result.design_data.columns:
-                        if col not in factor_names and col not in meta_cols:
-                            col_data = parse_result.design_data[col]
-                            if col_data.notna().any():
-                                responses[col] = col_data.values
-                    
-                        if responses:
-                            st.session_state['responses'] = responses
-                            st.session_state['response_names'] = list(responses.keys())
-                            st.session_state['response_definitions'] = parse_result.response_definitions
-                            st.success(f"✓ Imported {len(responses)} response(s)")
-                        else:
-                            st.warning("No response data in CSV")
+                    if responses:
+                        st.session_state['responses'] = responses
+                        st.session_state['response_names'] = list(responses.keys())
+                        st.session_state['response_definitions'] = parse_result.response_definitions
+                        st.success(f"✓ Imported {len(responses)} response(s)")
+                    else:
+                        st.warning("No response data in CSV")
                     
                     st.rerun()
             
@@ -240,16 +282,12 @@ if uploaded_file:
                         st.session_state['factors'] = parse_result.factors
                         st.session_state['design'] = parse_result.design_data
                         
-                        # Extract responses
-                        factor_names = {f.name for f in parse_result.factors}
-                        meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
-                        
-                        responses = {}
-                        for col in parse_result.design_data.columns:
-                            if col not in factor_names and col not in meta_cols:
-                                col_data = parse_result.design_data[col]
-                                if col_data.notna().any():
-                                    responses[col] = col_data.values
+                        # Extract responses using helper function
+                        responses = extract_responses_from_design(
+                            parse_result.design_data,
+                            parse_result.factors,
+                            parse_result.response_definitions
+                        )
                         
                         if responses:
                             st.session_state['responses'] = responses
@@ -261,16 +299,12 @@ if uploaded_file:
                 
                 elif resolution == "Use session factors (skip CSV factors)":
                     if st.button("✅ Import Responses Only", type="primary", use_container_width=True):
-                        # Extract responses only
-                        factor_names = {f.name for f in st.session_state['factors']}
-                        meta_cols = {'StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase'}
-                        
-                        responses = {}
-                        for col in parse_result.design_data.columns:
-                            if col not in factor_names and col not in meta_cols:
-                                col_data = parse_result.design_data[col]
-                                if col_data.notna().any():
-                                    responses[col] = col_data.values
+                        # Extract responses using helper function
+                        responses = extract_responses_from_design(
+                            parse_result.design_data,
+                            st.session_state['factors'],
+                            parse_result.response_definitions
+                        )
                         
                         if responses:
                             st.session_state['responses'] = responses

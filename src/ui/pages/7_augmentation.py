@@ -22,13 +22,25 @@ from src.ui.utils.state_management import (
     reset_augmentation
 )
 from src.ui.components.augmentation_wizard import (
+    display_mode_selection,
+    display_goal_selection,
     display_augmentation_plans,
+    display_plan_execution,
     display_no_augmentation_needed,
     display_augmentation_placeholder
+)
+from src.core.augmentation import (
+    AugmentationRequest,
+    recommend_augmentation,
+    get_mode_availability
 )
 
 # Initialize state
 initialize_session_state()
+
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
 
 # Check access - only need a design structure
 if not can_access_step(6):
@@ -119,6 +131,12 @@ if st.session_state.get('augmented_design') is not None:
     
     st.stop()
 
+# Check if selected plan exists and needs execution
+if st.session_state.get('selected_augmentation_plan'):
+    plan = st.session_state['selected_augmentation_plan']
+    display_plan_execution(plan)
+    st.stop()
+
 # Check if quality report exists - if not, show design info and suggest analysis
 if not st.session_state.get('quality_report'):
     st.info(
@@ -202,21 +220,43 @@ if not st.session_state.get('quality_report'):
 quality_report = st.session_state['quality_report']
 diagnostics = st.session_state['diagnostics_summary']
 
-# Check if augmentation is needed
-if not diagnostics.needs_any_augmentation():
-    display_no_augmentation_needed()
+# Check mode availability
+availability = get_mode_availability(diagnostics)
+
+# Mode selection workflow
+if 'augmentation_mode' not in st.session_state:
+    # Step 1: Select mode
+    selected_mode = display_mode_selection(diagnostics)
+    
+    if selected_mode:
+        st.session_state['augmentation_mode'] = selected_mode
+        st.rerun()
+    
+    st.stop()
+
+# Get selected mode
+mode = st.session_state['augmentation_mode']
+
+# Mode B: Goal selection
+if mode == 'enhance_design' and 'augmentation_goal' not in st.session_state:
+    selected_goal = display_goal_selection(diagnostics)
+    
+    if selected_goal:
+        st.session_state['augmentation_goal'] = selected_goal
+        st.rerun()
+    
+    # Back button
+    if st.button("← Back to Mode Selection"):
+        del st.session_state['augmentation_mode']
+        st.rerun()
+    
     st.stop()
 
 # Generate augmentation plans if not already generated
 if 'augmentation_plans' not in st.session_state or not st.session_state['augmentation_plans']:
     
-    with st.spinner("Analyzing design and generating augmentation recommendations..."):
+    with st.spinner("Generating augmentation recommendations..."):
         try:
-            from src.core.augmentation.recommendations import recommend_augmentation_plans
-            
-            # Get fitted models
-            fitted_models = st.session_state['fitted_models']
-            
             # Budget constraint (optional user input)
             with st.sidebar:
                 st.header("Augmentation Settings")
@@ -234,12 +274,16 @@ if 'augmentation_plans' not in st.session_state or not st.session_state['augment
                 else:
                     budget_constraint = None
             
-            # Generate plans
-            plans = recommend_augmentation_plans(
+            # Create augmentation request
+            request = AugmentationRequest(
+                mode=mode,
                 diagnostics=diagnostics,
-                fitted_models=fitted_models,
+                selected_goal=st.session_state.get('augmentation_goal'),
                 budget_constraint=budget_constraint
             )
+            
+            # Generate plans
+            plans = recommend_augmentation(request)
             
             # Save to state
             st.session_state['augmentation_plans'] = plans
@@ -248,10 +292,12 @@ if 'augmentation_plans' not in st.session_state or not st.session_state['augment
             st.error(f"Failed to generate augmentation plans: {e}")
             st.exception(e)
             
-            # Fallback navigation
-            if st.button("← Back to Analysis"):
-                st.session_state['current_step'] = 5
-                st.switch_page("pages/5_analyze.py")
+            # Reset and go back
+            if st.button("← Start Over"):
+                for key in ['augmentation_mode', 'augmentation_goal', 'augmentation_plans']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
             
             st.stop()
 
@@ -261,17 +307,27 @@ plans = st.session_state['augmentation_plans']
 if not plans:
     st.warning(
         "No augmentation plans could be generated. "
-        "This might indicate an issue with the design or analysis."
+        "This might indicate an issue with the design or your selected goal."
     )
     
-    if st.button("← Back to Analysis"):
-        st.session_state['current_step'] = 5
-        st.switch_page("pages/5_analyze.py")
+    # Reset and go back
+    if st.button("← Start Over"):
+        for key in ['augmentation_mode', 'augmentation_goal', 'augmentation_plans']:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
     
     st.stop()
 
 # Show the augmentation wizard
-display_augmentation_plans(plans)
+display_augmentation_plans(plans, mode)
+
+# Back button
+if st.button("← Start Over"):
+    for key in ['augmentation_mode', 'augmentation_goal', 'augmentation_plans']:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.rerun()
 
 # Sidebar: Plan comparison
 if len(plans) > 1:

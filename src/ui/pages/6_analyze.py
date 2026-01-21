@@ -328,6 +328,10 @@ def create_half_normal_plot(effects, effect_names):
 
 initialize_session_state()
 
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
+
 if not can_access_step(5):
     st.warning("⚠️ Please complete Steps 1-4 first")
     st.stop()
