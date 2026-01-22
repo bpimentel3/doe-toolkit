@@ -269,10 +269,21 @@ def _create_strategy_config(
         # I-optimal for prediction - add current model terms
         current_terms = _get_current_model_terms(diagnostics)
         
+        # Configure prediction grid based on number of factors
+        n_factors = len(diagnostics.factors)
+        prediction_grid_config = user_adjustments.get('prediction_grid_config', {})
+        
+        # Set defaults if not provided by user
+        if 'n_points_per_dim' not in prediction_grid_config:
+            prediction_grid_config['n_points_per_dim'] = 5
+        if 'grid_type' not in prediction_grid_config:
+            prediction_grid_config['grid_type'] = 'factorial' if n_factors <= 4 else 'lhs'
+        
         return OptimalAugmentConfig(
             new_model_terms=current_terms,
             n_runs_to_add=n_runs,
-            criterion='I'  # Will need to be implemented
+            criterion='I',
+            prediction_grid_config=prediction_grid_config
         )
     
     # CCD augmentation

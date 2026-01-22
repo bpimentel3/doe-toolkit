@@ -27,6 +27,8 @@ def augment_for_model_extension(
     current_model_terms: List[str],
     new_model_terms: List[str],
     n_runs_to_add: int,
+    criterion: str = 'D',
+    prediction_grid_config: Optional[dict] = None,
     seed: Optional[int] = None
 ) -> AugmentedDesign:
     """
@@ -48,6 +50,12 @@ def augment_for_model_extension(
         Complete set of terms for extended model (includes current)
     n_runs_to_add : int
         Number of runs to add
+    criterion : {'D', 'I'}, default='D'
+        Optimality criterion:
+        - 'D': D-optimal (maximize det(X'X), best for parameter estimates)
+        - 'I': I-optimal (minimize avg prediction variance, best for prediction)
+    prediction_grid_config : dict, optional
+        Configuration for I-optimal prediction grid (ignored for D-optimal)
     seed : int, optional
         Random seed
     
@@ -135,6 +143,8 @@ def augment_for_model_extension(
         factors=factors,
         model_terms=new_model_terms,
         n_runs_to_add=n_runs_to_add,
+        criterion=criterion,
+        prediction_grid_config=prediction_grid_config,
         seed=seed
     )
     
@@ -198,7 +208,9 @@ def _augmented_coordinate_exchange(
     factors: List[Factor],
     model_terms: List[str],
     n_runs_to_add: int,
-    seed: Optional[int],
+    criterion: str = 'D',
+    prediction_grid_config: Optional[dict] = None,
+    seed: Optional[int] = None,
     max_iterations: int = 100
 ) -> np.ndarray:
     """
@@ -221,6 +233,10 @@ def _augmented_coordinate_exchange(
         Model terms
     n_runs_to_add : int
         Number of runs to select
+    criterion : {'D', 'I'}, default='D'
+        Optimality criterion
+    prediction_grid_config : dict, optional
+        I-optimal prediction grid configuration
     seed : int, optional
         Random seed
     max_iterations : int
@@ -232,6 +248,10 @@ def _augmented_coordinate_exchange(
         Indices of selected candidates
     """
     from src.core.diagnostics.variance import build_model_matrix
+    from src.core.optimal_design import (
+        create_optimality_criterion,
+        create_polynomial_builder
+    )
     
     rng = np.random.default_rng(seed)
     N_cand = len(candidates)
@@ -244,14 +264,25 @@ def _augmented_coordinate_exchange(
     candidates_df = pd.DataFrame(candidates, columns=[f.name for f in factors])
     X_model_candidates = build_model_matrix(candidates_df, factors, model_terms)
     
-    # Compute initial X'X
+    # Create criterion object
+    # Use a simple model builder for criterion evaluation
+    def simple_builder(X_points: np.ndarray) -> np.ndarray:
+        df = pd.DataFrame(X_points, columns=[f.name for f in factors])
+        return build_model_matrix(df, factors, model_terms)
+    
+    criterion_obj = create_optimality_criterion(
+        criterion_type=criterion,
+        model_builder=simple_builder,
+        factors=factors,
+        prediction_grid_config=prediction_grid_config
+    )
+    
+    # Compute initial objective
     X_current = X_model_candidates[selected_indices]
     X_combined = np.vstack([X_model_original, X_current])
-    XtX = X_combined.T @ X_combined
     
     try:
-        XtX_inv = np.linalg.inv(XtX + 1e-10 * np.eye(p))
-        _, logdet = np.linalg.slogdet(XtX)
+        objective = criterion_obj.objective(X_combined)
     except:
         return selected_indices
     
@@ -262,7 +293,7 @@ def _augmented_coordinate_exchange(
         for i in range(n_runs_to_add):
             current_idx = selected_indices[i]
             best_idx = current_idx
-            best_logdet = logdet
+            best_objective = objective
             
             # Try swapping with candidates
             candidate_subset = rng.choice(N_cand, size=min(50, N_cand), replace=False)
@@ -277,12 +308,11 @@ def _augmented_coordinate_exchange(
                 
                 X_trial = X_model_candidates[trial_indices]
                 X_trial_combined = np.vstack([X_model_original, X_trial])
-                XtX_trial = X_trial_combined.T @ X_trial_combined
                 
                 try:
-                    sign, logdet_trial = np.linalg.slogdet(XtX_trial)
-                    if sign > 0 and logdet_trial > best_logdet:
-                        best_logdet = logdet_trial
+                    objective_trial = criterion_obj.objective(X_trial_combined)
+                    if objective_trial > best_objective:
+                        best_objective = objective_trial
                         best_idx = cand_idx
                         improved = True
                 except:
@@ -293,8 +323,7 @@ def _augmented_coordinate_exchange(
                 selected_indices[i] = best_idx
                 X_current = X_model_candidates[selected_indices]
                 X_combined = np.vstack([X_model_original, X_current])
-                XtX = X_combined.T @ X_combined
-                logdet = best_logdet
+                objective = best_objective
         
         if not improved:
             break
@@ -335,7 +364,9 @@ def execute_optimal_plan(plan: AugmentationPlan) -> AugmentedDesign:
     if not current_model_terms:
         raise ValueError("current_model_terms cannot be empty")
 
-    #####
+    # Extract criterion from config (default to 'D' for backward compatibility)
+    criterion = getattr(config, 'criterion', 'D')
+    prediction_grid_config = getattr(config, 'prediction_grid_config', None)
     
     augmented = augment_for_model_extension(
         original_design=plan.original_design,
@@ -343,6 +374,8 @@ def execute_optimal_plan(plan: AugmentationPlan) -> AugmentedDesign:
         current_model_terms=current_model_terms,
         new_model_terms=config.new_model_terms,
         n_runs_to_add=config.n_runs_to_add,
+        criterion=criterion,
+        prediction_grid_config=prediction_grid_config,
         seed=plan.metadata.get('seed')
     )
     
