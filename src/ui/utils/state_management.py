@@ -81,6 +81,13 @@ def initialize_session_state() -> None:
     # Navigation
     if 'current_step' not in st.session_state:
         st.session_state['current_step'] = 1
+    
+    # Export controls
+    if 'show_save_project' not in st.session_state:
+        st.session_state['show_save_project'] = False
+    
+    if 'show_generate_report' not in st.session_state:
+        st.session_state['show_generate_report'] = False
 
 
 def get_current_step() -> int:
@@ -90,7 +97,7 @@ def get_current_step() -> int:
 
 def set_current_step(step: int) -> None:
     """Set current workflow step."""
-    if 1 <= step <= 7:
+    if 1 <= step <= 8:
         st.session_state['current_step'] = step
 
 
@@ -101,7 +108,7 @@ def is_step_complete(step: int) -> bool:
     Parameters
     ----------
     step : int
-        Step number (1-7)
+        Step number (1-8)
     
     Returns
     -------
@@ -111,19 +118,34 @@ def is_step_complete(step: int) -> bool:
     if step == 1:  # Define Factors
         return len(st.session_state.get('factors', [])) > 0
     
-    elif step == 2:  # Choose Design
+    elif step == 2:  # Select Model
+        # Model selection is optional - consider complete if user proceeded
+        # OR if model_terms are defined
+        return (
+            st.session_state.get('model_terms') is not None or
+            st.session_state.get('design_type') is not None
+        )
+    
+    elif step == 3:  # Choose Design
         return st.session_state.get('design_type') is not None
     
-    elif step == 3:  # Preview Design
+    elif step == 4:  # Preview Design
         return st.session_state.get('design') is not None
     
-    elif step == 4:  # Import Results
-        return len(st.session_state.get('responses', {})) > 0
+    elif step == 5:  # Import Results
+        # FIXED: Check both responses dict AND design exists
+        # Allow step 5 to be complete if user imported CSV with auto-detect
+        # which creates both design and responses simultaneously
+        responses = st.session_state.get('responses', {})
+        design = st.session_state.get('design')
+        
+        # Step 5 is complete if we have responses AND design
+        return (len(responses) > 0) and (design is not None)
     
-    elif step == 5:  # Analysis
+    elif step == 6:  # Analysis
         return len(st.session_state.get('fitted_models', {})) > 0
     
-    elif step == 6:  # Augmentation (optional)
+    elif step == 7:  # Augmentation (optional)
         # Augmentation is optional - considered complete if:
         # - User explicitly skipped, OR
         # - Plan was executed
@@ -132,7 +154,7 @@ def is_step_complete(step: int) -> bool:
             not st.session_state.get('show_augmentation', False)
         )
     
-    elif step == 7:  # Optimization
+    elif step == 8:  # Optimization
         return st.session_state.get('optimization_results') is not None
     
     return False
@@ -155,6 +177,26 @@ def can_access_step(step: int) -> bool:
     # Can always access step 1
     if step == 1:
         return True
+    
+    # Step 5 can be accessed from home (auto-detect mode)
+    # This allows users to start by importing CSV
+    if step == 5:
+        return True
+    
+    # For step 6 (Analyze), check if step 5 is complete
+    # This is the critical fix - we need design AND responses
+    if step == 6:
+        return is_step_complete(5)
+    
+    # For step 7 (Augmentation), only requires design structure
+    # Analysis is helpful but not required - user can view design and decide to augment
+    if step == 7:
+        return st.session_state.get('design') is not None
+    
+    # For step 8 (Optimization), requires analysis to be complete
+    # Augmentation (step 7) is optional, so skip it
+    if step == 8:
+        return is_step_complete(6)
     
     # For other steps, all previous steps must be complete
     for i in range(1, step):
@@ -299,6 +341,7 @@ def get_workflow_progress() -> Dict[str, Any]:
     """
     steps = [
         "Define Factors",
+        "Select Model",
         "Choose Design",
         "Preview Design",
         "Import Results",
@@ -308,11 +351,11 @@ def get_workflow_progress() -> Dict[str, Any]:
     ]
     
     progress = {
-        'total_steps': 7,
+        'total_steps': 8,
         'current_step': get_current_step(),
         'steps': steps,
-        'completed': [is_step_complete(i) for i in range(1, 8)],
-        'accessible': [can_access_step(i) for i in range(1, 8)]
+        'completed': [is_step_complete(i) for i in range(1, 9)],
+        'accessible': [can_access_step(i) for i in range(1, 9)]
     }
     
     return progress
@@ -391,6 +434,13 @@ def create_project_file() -> str:
     """
     Create project file (JSON) from current session state.
     
+    Captures complete project state including:
+    - Factors, design, and design metadata
+    - Responses and model terms
+    - Augmentation plans and augmented designs
+    - Optimization results
+    - Diagnostics and quality reports
+    
     Returns
     -------
     str
@@ -436,18 +486,53 @@ def create_project_file() -> str:
     if st.session_state.get('model_terms_per_response'):
         project['model_terms_per_response'] = st.session_state['model_terms_per_response']
     
+    # Add excluded rows if any
+    if st.session_state.get('excluded_rows'):
+        project['excluded_rows'] = st.session_state['excluded_rows']
+    
+    # Add augmentation data if exists
+    if st.session_state.get('augmented_design') is not None:
+        augmented = st.session_state['augmented_design']
+        project['augmented_design'] = {
+            'combined_design': augmented.combined_design.to_dict('records'),
+            'new_runs_only': augmented.new_runs_only.to_dict('records'),
+            'block_column': augmented.block_column,
+            'n_runs_original': augmented.n_runs_original,
+            'n_runs_added': augmented.n_runs_added,
+            'n_runs_total': augmented.n_runs_total,
+            'achieved_improvements': augmented.achieved_improvements,
+            'resolution': augmented.resolution,
+            'd_efficiency': augmented.d_efficiency,
+            'condition_number': augmented.condition_number
+        }
+    
+    # Add selected augmentation plan metadata if exists
+    if st.session_state.get('selected_plan') is not None:
+        plan = st.session_state['selected_plan']
+        project['selected_augmentation_plan'] = {
+            'plan_id': plan.plan_id,
+            'plan_name': plan.plan_name,
+            'strategy': plan.strategy,
+            'n_runs_to_add': plan.n_runs_to_add,
+            'expected_improvements': plan.expected_improvements
+        }
+    
+    # Add optimization results if exists
+    if st.session_state.get('optimization_results') is not None:
+        opt_result = st.session_state['optimization_results']
+        project['optimization_results'] = {
+            'optimal_settings': opt_result.optimal_settings,
+            'predicted_response': opt_result.predicted_response,
+            'confidence_interval': opt_result.confidence_interval,
+            'prediction_interval': opt_result.prediction_interval,
+            'objective_value': opt_result.objective_value,
+            'n_iterations': opt_result.n_iterations,
+            'success': opt_result.success,
+            'message': opt_result.message
+        }
+    
     return json.dumps(project, indent=2)
 
-
-"""
-Session State Management with Factor Name Sanitization.
-
-This is the updated load_project_file function from state_management.py
-that handles legacy factor names.
-
-INSTRUCTIONS: Replace the load_project_file function in 
-src/ui/utils/state_management.py with this version.
-"""
 
 def load_project_file(file_content: str) -> None:
     """
@@ -645,7 +730,6 @@ def load_project_file(file_content: str) -> None:
         st.success("✓ Project loaded successfully!")
 
 
-# Additional helper function for CSV imports
 def sanitize_design_columns(design: pd.DataFrame, factors: list) -> pd.DataFrame:
     """
     Sanitize column names in imported design to match factor names.
@@ -663,27 +747,16 @@ def sanitize_design_columns(design: pd.DataFrame, factors: list) -> pd.DataFrame
     -------
     pd.DataFrame
         Design with sanitized column names
-    
-    Examples
-    --------
-    >>> # In 4_import_results.py after loading CSV
-    >>> design = sanitize_design_columns(uploaded_df, factors)
     """
     from src.core.factors import sanitize_factor_name
     
     # Build mapping from potential unsafe names to safe names
     factor_map = {}
     for factor in factors:
-        # The factor already has a safe name, but the CSV might have the original
-        # We need to handle both the case where CSV has safe names and unsafe names
-        
-        # Create reverse mapping: try common variations
         safe_name = factor.name
         
-        # For now, just ensure all factor names in design match
-        # This is a simplified version - you might need more sophisticated matching
+        # If safe_name not in design, try to find column that sanitizes to it
         if safe_name not in design.columns:
-            # Try to find a column that might sanitize to this name
             for col in design.columns:
                 sanitized_col, _ = sanitize_factor_name(col)
                 if sanitized_col == safe_name:
@@ -697,3 +770,81 @@ def sanitize_design_columns(design: pd.DataFrame, factors: list) -> pd.DataFrame
         )
     
     return design
+
+
+def display_data_status() -> None:
+    """
+    Display current data status in sidebar.
+    
+    Shows summary of loaded design and responses.
+    """
+    design = st.session_state.get('design')
+    responses = st.session_state.get('responses', {})
+    factors = st.session_state.get('factors', [])
+    
+    if design is None and not responses:
+        return  # No data loaded
+    
+    st.sidebar.markdown("### 📊 Current Data")
+    
+    if design is not None:
+        design_type = st.session_state.get('design_metadata', {}).get('design_type', 'Unknown')
+        
+        st.sidebar.markdown(f"**Design:** {design_type.replace('_', ' ').title()}")
+        st.sidebar.markdown(f"- {len(design)} runs")
+        st.sidebar.markdown(f"- {len(factors)} factors")
+        
+        # Show block/phase info if present
+        if 'Block' in design.columns:
+            n_blocks = design['Block'].nunique()
+            st.sidebar.markdown(f"- {n_blocks} blocks")
+        
+        if 'Phase' in design.columns:
+            phases = design['Phase'].value_counts().sort_index()
+            if len(phases) > 1:
+                st.sidebar.markdown(
+                    f"- Phase 1: {phases.get(1, 0)} runs"
+                )
+                st.sidebar.markdown(
+                    f"- Phase 2: {phases.get(2, 0)} runs (augmented)"
+                )
+    
+    if responses:
+        st.sidebar.markdown(f"**Responses:** {len(responses)}")
+        for name in list(responses.keys())[:3]:  # Show first 3
+            st.sidebar.markdown(f"- {name}")
+        
+        if len(responses) > 3:
+            st.sidebar.markdown(f"- ... and {len(responses) - 3} more")
+    
+    st.sidebar.markdown("---")
+
+
+def update_workflow_progress_display() -> None:
+    """
+    Enhanced workflow progress display.
+    
+    This replaces the display_workflow_progress function
+    to include data status.
+    """
+    progress = get_workflow_progress()
+    
+    st.sidebar.markdown("### 📋 Workflow Progress")
+    
+    for i, step_name in enumerate(progress['steps'], start=1):
+        if progress['completed'][i-1]:
+            icon = "✅"
+        elif progress['accessible'][i-1]:
+            icon = "⭕"
+        else:
+            icon = "🔒"
+        
+        if i == progress['current_step']:
+            st.sidebar.markdown(f"**{icon} {i}. {step_name}**")
+        else:
+            st.sidebar.markdown(f"{icon} {i}. {step_name}")
+    
+    st.sidebar.markdown("---")
+    
+    # Add data status below workflow progress
+    display_data_status()

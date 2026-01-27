@@ -290,7 +290,8 @@ class TestFoldoverAugmentation:
         assert phases[1] == 4  # Original
         assert phases[2] == 4  # Foldover
         
-        # Check resolution improved
+        # Check resolution improved (full factorial convention: resolution = k+1)
+        # Full foldover of 2^(3-1) gives 2^3 full factorial with resolution > k
         assert augmented.resolution > 3
     
     def test_full_foldover_flips_signs(self, fractional_design):

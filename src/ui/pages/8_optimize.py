@@ -28,6 +28,10 @@ from src.ui.utils.state_management import (
 # Initialize state
 initialize_session_state()
 
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
+
 # Check access
 if not can_access_step(7):
     st.warning("⚠️ Please complete Steps 1-6 first")
@@ -144,66 +148,60 @@ if optimization_mode == 'single':
         if st.button("🔍 Find Optimal Settings", type="primary", use_container_width=True):
             with st.spinner("Optimizing..."):
                 try:
+                    from src.core.optimization import optimize_response
+                    
                     # Get fitted model
-                    results = fitted_models[primary_response]
+                    anova_results = fitted_models[primary_response]
                     
-                    # Simple grid search optimization (placeholder)
-                    # In real implementation, use scipy.optimize or similar
+                    # Prepare objective and target
+                    obj_map = {"Maximize": "maximize", "Minimize": "minimize", "Target": "target"}
+                    opt_objective = obj_map[objective]
                     
-                    # Generate grid
-                    n_points = 100
-                    factor_values = {}
+                    target_val = target_value if objective == "Target" else None
                     
-                    for factor in factors:
-                        if factor.is_continuous():
-                            min_c, max_c = factor_constraints.get(factor.name, (factor.min_value, factor.max_value))
-                            factor_values[factor.name] = np.linspace(min_c, max_c, n_points)
+                    # Run optimization
+                    opt_result = optimize_response(
+                        anova_results=anova_results,
+                        factors=factors,
+                        objective=opt_objective,
+                        target_value=target_val,
+                        bounds=factor_constraints if factor_constraints else None,
+                        seed=42
+                    )
                     
-                    # Create grid (simplified for 2 factors)
-                    if len(factor_values) == 2:
-                        factor_names = list(factor_values.keys())
-                        X, Y = np.meshgrid(
-                            factor_values[factor_names[0]],
-                            factor_values[factor_names[1]]
-                        )
-                        
-                        # Predict on grid
-                        grid_design = pd.DataFrame({
-                            factor_names[0]: X.ravel(),
-                            factor_names[1]: Y.ravel()
-                        })
-                        
-                        predictions = results.fitted_model.predict(grid_design)
-                        
-                        # Find optimum
-                        if objective == "Maximize":
-                            opt_idx = np.argmax(predictions)
-                        elif objective == "Minimize":
-                            opt_idx = np.argmin(predictions)
-                        else:
-                            opt_idx = np.argmin(np.abs(predictions - target_value))
-                        
-                        opt_settings = grid_design.iloc[opt_idx]
-                        opt_prediction = predictions[opt_idx]
-                        
+                    if opt_result.success:
                         # Display results
                         st.success(f"✅ Optimal settings found!")
                         
                         st.subheader("Optimal Factor Settings")
-                        for fname, value in opt_settings.items():
-                            st.metric(fname, f"{value:.3f}")
+                        for fname, value in opt_result.optimal_settings.items():
+                            factor = next(f for f in factors if f.name == fname)
+                            if factor.units:
+                                st.metric(fname, f"{value:.3f} {factor.units}")
+                            else:
+                                st.metric(fname, f"{value:.3f}")
                         
-                        st.metric(f"Predicted {primary_response}", f"{opt_prediction:.3f}")
+                        st.metric(f"Predicted {primary_response}", f"{opt_result.predicted_response:.3f}")
                         
-                        # Confidence interval (simplified)
-                        se = results.rmse
-                        ci_lower = opt_prediction - 1.96 * se
-                        ci_upper = opt_prediction + 1.96 * se
+                        # Confidence and prediction intervals
+                        ci_lower, ci_upper = opt_result.confidence_interval
+                        pi_lower, pi_upper = opt_result.prediction_interval
                         
-                        st.caption(f"95% CI: [{ci_lower:.3f}, {ci_upper:.3f}]")
-                    
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.caption(f"95% Confidence Interval: [{ci_lower:.3f}, {ci_upper:.3f}]")
+                            st.caption("(for the mean response)")
+                        with col2:
+                            st.caption(f"95% Prediction Interval: [{pi_lower:.3f}, {pi_upper:.3f}]")
+                            st.caption("(for a single observation)")
+                        
+                        # Show optimization details
+                        with st.expander("🔍 Optimization Details"):
+                            st.write(f"**Iterations:** {opt_result.n_iterations}")
+                            st.write(f"**Objective Value:** {opt_result.objective_value:.6f}")
+                            st.write(f"**Status:** {opt_result.message}")
                     else:
-                        st.warning("Multi-factor optimization (>2 factors) requires numerical optimization. Feature coming soon!")
+                        st.error(f"Optimization failed: {opt_result.message}")
                 
                 except Exception as e:
                     st.error(f"Optimization failed: {e}")
@@ -234,8 +232,8 @@ if optimization_mode == 'single':
                         x_fac = next(f for f in factors if f.name == x_factor)
                         y_fac = next(f for f in factors if f.name == y_factor)
                         
-                        x_vals = np.linspace(x_fac.min, x_fac.max, 30)
-                        y_vals = np.linspace(y_fac.min, y_fac.max, 30)
+                        x_vals = np.linspace(x_fac.min_value, x_fac.max_value, 30)
+                        y_vals = np.linspace(y_fac.min_value, y_fac.max_value, 30)
                         
                         X, Y = np.meshgrid(x_vals, y_vals)
                         
@@ -255,7 +253,9 @@ if optimization_mode == 'single':
                         
                         # Predict
                         results = fitted_models[primary_response]
-                        Z_pred = results.fitted_model.predict(grid_design).reshape(X.shape)
+                        predictions = results.fitted_model.predict(grid_design)
+                        # Convert Series to numpy array before reshape
+                        Z_pred = np.array(predictions).reshape(X.shape)
                         
                         # Plot
                         fig = go.Figure(data=[go.Surface(x=X, y=Y, z=Z_pred)])
@@ -300,8 +300,8 @@ if optimization_mode == 'single':
                         x_fac = next(f for f in factors if f.name == x_factor)
                         y_fac = next(f for f in factors if f.name == y_factor)
                         
-                        x_vals = np.linspace(x_fac.min, x_fac.max, 30)
-                        y_vals = np.linspace(y_fac.min, y_fac.max, 30)
+                        x_vals = np.linspace(x_fac.min_value, x_fac.max_value, 30)
+                        y_vals = np.linspace(y_fac.min_value, y_fac.max_value, 30)
                         
                         X, Y = np.meshgrid(x_vals, y_vals)
                         
@@ -316,7 +316,9 @@ if optimization_mode == 'single':
                                     grid_design[factor.name] = (factor.min_value + factor.max_value) / 2
                         
                         results = fitted_models[primary_response]
-                        Z_pred = results.fitted_model.predict(grid_design).reshape(X.shape)
+                        predictions = results.fitted_model.predict(grid_design)
+                        # Convert Series to numpy array before reshape
+                        Z_pred = np.array(predictions).reshape(X.shape)
                         
                         fig = go.Figure(data=go.Contour(x=x_vals, y=y_vals, z=Z_pred))
                         

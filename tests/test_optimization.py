@@ -165,7 +165,7 @@ def _calculate_analytical_optimum(factors, coefficients):
         x_opt = -b / (2 * c)
         
         # Clip to bounds
-        x_opt = np.clip(x_opt, factors[0].min, factors[0].max)
+        x_opt = np.clip(x_opt, factors[0].min_value, factors[0].max_value)
         
         # Calculate y_opt
         y_opt = coefficients.get('intercept', 0) + b * x_opt + c * x_opt**2
@@ -189,7 +189,7 @@ def _calculate_analytical_optimum(factors, coefficients):
         # Clip to bounds
         x_opts = np.array(x_opts)
         for i, f in enumerate(factors):
-            x_opts[i] = np.clip(x_opts[i], f.min, f.max)
+            x_opts[i] = np.clip(x_opts[i], f.min_value, f.max_value)
         
         # Calculate y_opt
         y_opt = coefficients.get('intercept', 0)

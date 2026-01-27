@@ -430,3 +430,182 @@ def assess_variance_uniformity(
         return False, f"Prediction variance is moderately non-uniform (ratio: {ratio:.2f})"
     else:
         return False, f"Prediction variance is highly non-uniform (ratio: {ratio:.2f})"
+
+
+def compute_i_criterion(
+    design: pd.DataFrame,
+    factors: List[Factor],
+    model_terms: List[str],
+    prediction_grid_config: Optional[dict] = None
+) -> float:
+    """
+    Compute I-optimality criterion for a design.
+    
+    The I-criterion measures average prediction variance across the design
+    region, providing a single scalar measure of prediction quality.
+    
+    I = trace((X'X)^(-1) * M)
+    
+    where M is the moment matrix over the prediction region.
+    
+    Parameters
+    ----------
+    design : pd.DataFrame
+        Design matrix with factor columns
+    factors : List[Factor]
+        Factor definitions
+    model_terms : List[str]
+        Model terms to evaluate
+    prediction_grid_config : dict, optional
+        Configuration for prediction grid generation.
+        See generate_prediction_grid() for options.
+    
+    Returns
+    -------
+    float
+        I-criterion value (lower is better for prediction)
+    
+    Notes
+    -----
+    The I-criterion is the integral of prediction variance over the
+    design region. Lower values indicate better, more uniform prediction
+    quality across the space.
+    
+    For comparison:
+    - D-optimal designs minimize parameter variance
+    - I-optimal designs minimize average prediction variance
+    
+    Examples
+    --------
+    >>> i_value = compute_i_criterion(design, factors, model_terms)
+    >>> print(f"Average prediction variance: {i_value:.3f}")
+    
+    References
+    ----------
+    .. [1] Atkinson, A. C., Donev, A. N., & Tobias, R. D. (2007).
+           Optimum experimental designs, with SAS. Oxford University Press.
+    .. [2] Jones, B., & Goos, P. (2012). I-optimal versus D-optimal
+           split-plot response surface designs. Journal of Quality
+           Technology, 44(2), 85-101.
+    """
+    from src.core.optimal.criteria import generate_prediction_grid
+    
+    # Build model matrix for design
+    X = build_model_matrix(design, factors, model_terms)
+    
+    # Compute (X'X)^(-1)
+    XtX = X.T @ X
+    try:
+        XtX_inv = np.linalg.inv(XtX + 1e-10 * np.eye(XtX.shape[0]))
+    except np.linalg.LinAlgError:
+        return np.inf
+    
+    # Generate prediction grid
+    factor_names = [f.name for f in factors]
+    prediction_points = generate_prediction_grid(factors, prediction_grid_config or {})
+    
+    # Build model matrix for prediction points
+    pred_df = pd.DataFrame(prediction_points, columns=factor_names)
+    X_pred = build_model_matrix(pred_df, factors, model_terms)
+    
+    # Compute moment matrix M = (1/N) * X_pred' * X_pred
+    M = (X_pred.T @ X_pred) / len(prediction_points)
+    
+    # I-criterion = trace((X'X)^(-1) * M)
+    i_criterion = np.trace(XtX_inv @ M)
+    
+    return float(i_criterion)
+
+
+def compute_design_quality_metrics(
+    design: pd.DataFrame,
+    factors: List[Factor],
+    model_terms: List[str],
+    include_i_optimal: bool = True,
+    prediction_grid_config: Optional[dict] = None
+) -> Dict[str, float]:
+    """
+    Compute comprehensive design quality metrics.
+    
+    Provides both D-optimality and I-optimality measures for evaluating
+    and comparing experimental designs.
+    
+    Parameters
+    ----------
+    design : pd.DataFrame
+        Design matrix with factor columns
+    factors : List[Factor]
+        Factor definitions
+    model_terms : List[str]
+        Model terms to evaluate
+    include_i_optimal : bool, default=True
+        Whether to compute I-optimality metrics
+    prediction_grid_config : dict, optional
+        Configuration for I-optimal prediction grid
+    
+    Returns
+    -------
+    Dict[str, float]
+        Dictionary with quality metrics:
+        - 'd_efficiency': D-efficiency (0-100)
+        - 'condition_number': Condition number of X'X
+        - 'i_criterion': I-criterion value (if include_i_optimal=True)
+        - 'avg_prediction_variance': Average prediction variance
+        - 'max_prediction_variance': Maximum prediction variance
+        - 'prediction_variance_ratio': Max/min prediction variance ratio
+    
+    Examples
+    --------
+    >>> metrics = compute_design_quality_metrics(design, factors, model_terms)
+    >>> print(f"D-efficiency: {metrics['d_efficiency']:.1f}%")
+    >>> print(f"I-criterion: {metrics['i_criterion']:.3f}")
+    
+    Notes
+    -----
+    This function provides a comprehensive assessment of design quality
+    for both parameter estimation (D-optimal) and prediction (I-optimal)
+    objectives.
+    """
+    # Build model matrix
+    X = build_model_matrix(design, factors, model_terms)
+    
+    # Compute X'X
+    XtX = X.T @ X
+    
+    metrics = {}
+    
+    # D-efficiency metrics
+    try:
+        det_XtX = np.linalg.det(XtX)
+        metrics['d_efficiency'] = 100.0 if det_XtX > 0 else 0.0
+        
+        condition_number = np.linalg.cond(XtX)
+        metrics['condition_number'] = float(condition_number)
+    except:
+        metrics['d_efficiency'] = 0.0
+        metrics['condition_number'] = np.inf
+    
+    # Prediction variance metrics
+    try:
+        pred_var_stats = prediction_variance_stats(
+            design, factors, model_terms, sigma_squared=1.0
+        )
+        metrics['avg_prediction_variance'] = pred_var_stats['mean']
+        metrics['max_prediction_variance'] = pred_var_stats['max']
+        metrics['prediction_variance_ratio'] = pred_var_stats['max_ratio']
+    except:
+        metrics['avg_prediction_variance'] = np.nan
+        metrics['max_prediction_variance'] = np.nan
+        metrics['prediction_variance_ratio'] = np.nan
+    
+    # I-optimality metrics
+    if include_i_optimal:
+        try:
+            i_crit = compute_i_criterion(
+                design, factors, model_terms, prediction_grid_config
+            )
+            metrics['i_criterion'] = i_crit
+        except:
+            metrics['i_criterion'] = np.nan
+    
+    return metrics

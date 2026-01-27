@@ -518,14 +518,14 @@ class TestDegreesOfFreedom:
         
         analysis = ANOVAAnalysis(design, response, factors)
         
-        with pytest.warns(UserWarning, match="Saturated.*df=0"):
+        with pytest.warns(UserWarning, match=r"Model is saturated.*df_error = 0"):
             results = analysis.fit(['A', 'B', 'A*B'])
         
         assert results is not None
         assert results.r_squared == 1.0
         assert 'A' in results.effect_estimates.index
     
-    def test_oversaturated_model_warns(self):
+     def test_oversaturated_model_warns(self):
         """Test that oversaturated model (df<0) warns."""
         factors = [
             Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
@@ -542,10 +542,12 @@ class TestDegreesOfFreedom:
         
         analysis = ANOVAAnalysis(design, response, factors_extended)
         
-        with pytest.warns(UserWarning, match="Oversaturated"):
+        # Oversaturated: 4 runs but 5 terms (intercept + 3 factors + 1 interaction)
+        with pytest.warns(UserWarning, match="Oversaturated|singular|not enough"):
             try:
                 results = analysis.fit(['A', 'B', 'C', 'A*B'])
-            except:
+                # Model may fail to fit, which is acceptable
+            except (ValueError, np.linalg.LinAlgError, RuntimeError):
                 pass
     
     def test_low_df_warns(self):

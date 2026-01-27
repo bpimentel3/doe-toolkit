@@ -127,11 +127,11 @@ def augment_full_foldover(
     
     if p == 0:
         # Already full factorial
-        new_resolution = k
+        new_resolution = k + 1  # Convention: full factorial has resolution > k
         new_generators = []
     elif p == 1:
         # Single generator: foldover gives full factorial
-        new_resolution = k
+        new_resolution = k + 1  # Convention: full factorial has resolution > k
         new_generators = []
     else:
         # Multiple generators: combined design has p-1 effective generators

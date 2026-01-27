@@ -14,6 +14,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import re
 
 from src.ui.utils.state_management import (
     initialize_session_state,
@@ -22,9 +23,45 @@ from src.ui.utils.state_management import (
     invalidate_downstream_state
 )
 from src.core.factors import Factor
+from src.ui.utils.csv_parser import generate_doe_csv
+from src.ui.components.constraint_builder import (
+    format_constraint_preview,
+    validate_constraints
+)
+
+
+def _validate_response_name(name: str, existing_responses: list) -> bool:
+    """
+    Validate response name.
+    
+    Rules:
+    - Must be alphanumeric + underscore
+    - Must not be duplicate (case-insensitive)
+    - Must not be reserved word
+    """
+    # Check format
+    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+        return False
+    
+    # Check for duplicates (case-insensitive)
+    existing_names = [r['name'].lower() for r in existing_responses]
+    if name.lower() in existing_names:
+        return False
+    
+    # Check for reserved words
+    reserved = {'I', 'C', 'Q', 'T'}  # patsy/pandas reserved
+    if name in reserved:
+        return False
+    
+    return True
+
 
 # Initialize state
 initialize_session_state()
+
+# Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
+build_standard_sidebar()
 
 # Check access
 if not can_access_step(3):
@@ -43,6 +80,110 @@ st.markdown(f"""
 """)
 
 st.divider()
+
+# Response Definition Section (appears BEFORE design preview)
+if st.session_state.get('design') is None:
+    st.subheader("📊 Define Responses to Measure")
+    st.caption("Declare what you'll measure so the CSV template includes these columns")
+    
+    # Initialize response definitions if not present
+    if 'response_definitions' not in st.session_state:
+        st.session_state['response_definitions'] = []
+    
+    response_defs = st.session_state['response_definitions']
+    
+    # Response definition form
+    with st.form("response_form", border=True):
+        # Container for response rows
+        response_rows = []
+        
+        # Show existing responses with option to edit/remove
+        for i, response in enumerate(response_defs):
+            col1, col2, col3 = st.columns([2, 1.5, 0.5])
+            
+            with col1:
+                response_rows.append({
+                    'name': st.text_input(
+                        "Response Name",
+                        value=response.get('name', ''),
+                        key=f"response_name_{i}",
+                        label_visibility="collapsed"
+                    ),
+                    'index': i
+                })
+            
+            with col2:
+                units = st.text_input(
+                    "Units",
+                    value=response.get('units', '') if response.get('units') else '',
+                    key=f"response_units_{i}",
+                    placeholder="e.g., %, mg/mL",
+                    label_visibility="collapsed"
+                )
+                response_rows[i]['units'] = units if units else None
+            
+            with col3:
+                if st.form_submit_button(
+                    "❌",
+                    key=f"remove_response_{i}",
+                    help="Remove this response"
+                ):
+                    st.session_state['response_definitions'].pop(i)
+                    st.rerun()
+        
+        # Add new empty row for adding response
+        col1, col2, col3 = st.columns([2, 1.5, 0.5])
+        
+        with col1:
+            new_name = st.text_input(
+                "Response Name",
+                value='',
+                key="response_name_new",
+                label_visibility="collapsed"
+            )
+        
+        with col2:
+            new_units = st.text_input(
+                "Units",
+                value='',
+                key="response_units_new",
+                placeholder="e.g., %, mg/mL",
+                label_visibility="collapsed"
+            )
+        
+        col_left, col_right = st.columns([2.5, 1])
+        
+        with col_right:
+            if st.form_submit_button("+ Add Response", use_container_width=True):
+                if new_name.strip():
+                    # Validate response name
+                    if not _validate_response_name(new_name, st.session_state['response_definitions']):
+                        st.error("Response name invalid or already exists")
+                    else:
+                        st.session_state['response_definitions'].append({
+                            'name': new_name.strip(),
+                            'units': new_units.strip() if new_units.strip() else None
+                        })
+                        st.rerun()
+                else:
+                    st.warning("Response name cannot be empty")
+        
+        # Update existing responses from form input
+        for i, row in enumerate(response_rows):
+            if i < len(st.session_state['response_definitions']):
+                st.session_state['response_definitions'][i]['name'] = row['name']
+                st.session_state['response_definitions'][i]['units'] = row['units']
+    
+    # Show summary
+    if st.session_state['response_definitions']:
+        st.write(f"**Defined responses ({len(st.session_state['response_definitions'])}):**")
+        for resp in st.session_state['response_definitions']:
+            units_str = f" ({resp['units']})" if resp['units'] else ""
+            st.caption(f"• {resp['name']}{units_str}")
+    else:
+        st.info("ℹ️ No responses defined yet. You can still generate a design, but won't have response columns in the CSV.")
+    
+    st.divider()
 
 # Generate design button
 if st.session_state.get('design') is None:
@@ -71,6 +212,35 @@ if st.session_state.get('design') is None:
         else:
             seed = None
     
+    # Validate and display constraints if D-Optimal
+    if design_type == "D-Optimal":
+        constraints = st.session_state.get('constraints', [])
+        
+        if constraints:
+            st.info(f"ℹ️ Design will respect {len(constraints)} constraint(s)")
+            
+            with st.expander("View Constraints"):
+                for i, constraint in enumerate(constraints):
+                    constraint_str = format_constraint_preview(
+                        constraint.coefficients,
+                        constraint.bound,
+                        constraint.constraint_type
+                    )
+                    st.code(f"{i+1}. {constraint_str}")
+            
+            # Validate constraints
+            is_valid, warnings = validate_constraints(constraints, factors)
+            
+            if not is_valid:
+                st.error("❌ **Invalid Constraints**")
+                for warning in warnings:
+                    st.error(warning)
+                st.stop()
+            
+            if warnings:
+                for warning in warnings:
+                    st.warning(warning)
+    
     # Generate button
     if st.button("🔬 Generate Design", type="primary", use_container_width=True):
         
@@ -86,7 +256,7 @@ if st.session_state.get('design') is None:
                         randomize=st.session_state.get('randomize', True),
                         random_seed=st.session_state.get('random_seed'),
                         n_blocks=st.session_state.get('n_blocks')
-    )
+                    )
                     
                     metadata = {
                         'design_type': 'full_factorial',
@@ -129,7 +299,7 @@ if st.session_state.get('design') is None:
                     from src.core.response_surface import (
                         CentralCompositeDesign,  
                         BoxBehnkenDesign          
-    )
+                    )
                     
                     rsd_variant = st.session_state.get('rsd_variant', 'CCD')
     
@@ -276,6 +446,7 @@ if st.session_state.get('design') is None:
                 # Save to session state
                 st.session_state['design'] = design
                 st.session_state['design_metadata'] = metadata
+                st.session_state['design_metadata']['design_type'] = design_type
                 
                 st.success(f"✓ Design generated successfully! ({len(design)} runs)")
                 st.rerun()
@@ -363,6 +534,20 @@ else:
                 else:
                     st.code(gen)
     
+    # Show constraints for D-Optimal designs
+    if design_type == "D-Optimal" and st.session_state.get('constraints'):
+        with st.expander("📌 Applied Constraints"):
+            constraints = st.session_state['constraints']
+            st.markdown(f"**{len(constraints)} constraint(s) were applied:**")
+            for i, constraint in enumerate(constraints):
+                constraint_str = format_constraint_preview(
+                    constraint.coefficients,
+                    constraint.bound,
+                    constraint.constraint_type
+                )
+                st.code(f"{i+1}. {constraint_str}")
+            st.info("✅ All design points satisfy these constraints")
+    
     if metadata.get('is_split_plot'):
         with st.expander("📊 Split-Plot Structure"):
             if 'WholePlot' in design.columns:
@@ -379,13 +564,22 @@ else:
     
     with col1:
         st.markdown("**Design CSV** (for experiments)")
-        st.caption("Download this, run your experiments, then add response columns")
+        st.caption("Download this, run your experiments, then add response data")
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Generate CSV with metadata
+        csv_content = generate_doe_csv(
+            design=design,
+            factors=factors,
+            response_definitions=st.session_state.get('response_definitions'),
+            design_type=design_type,
+            design_metadata=metadata
+        )
+        
         st.download_button(
             label="📥 Download Design CSV",
-            data=design.to_csv(index=False),
+            data=csv_content,
             file_name=f"doe_design_{timestamp}.csv",
             mime="text/csv",
             use_container_width=True,
@@ -414,18 +608,31 @@ else:
     st.divider()
     
     # Next steps guidance
-    st.info("""
-    ### 📋 Next Steps
+    response_count = len(st.session_state.get('response_definitions', []))
     
-    1. **Download the Design CSV** above
-    2. **Run your experiments** using the factor settings in the CSV
-    3. **Measure your response(s)** (e.g., Yield, Purity, etc.)
-    4. **Add response columns** to the CSV in Excel/spreadsheet
-    5. **Return to this app** and proceed to Step 4: Import Results
-    
-    💡 **Tip:** You can close this app now. When you return later, upload your project file 
-    or the completed design+results CSV to continue.
-    """)
+    if response_count > 0:
+        st.success(f"✓ {response_count} response(s) defined. Empty columns in CSV ready for data.")
+        resp_names = ", ".join([f"{r['name']}" for r in st.session_state['response_definitions']])
+        st.info(f"""
+        ### 📋 Next Steps
+        
+        1. **Download the Design CSV** above
+        2. **Run your experiments** using the factor settings in the CSV
+        3. **Measure your response(s)** and fill in: {resp_names}
+        4. **Return to this app** and proceed to Step 4: Import Results
+        
+        💡 **Tip:** CSV includes metadata header so you can always see factor definitions.
+        """)
+    else:
+        st.warning("⚠️ No responses defined - CSV won't have response columns")
+        st.info("""
+        ### 📋 Next Steps
+        
+        1. **Download the Design CSV** above
+        2. **Run your experiments** using the factor settings in the CSV
+        3. **Manually add response columns** to the CSV in Excel/spreadsheet
+        4. **Return to this app** and proceed to Step 4: Import Results
+        """)
     
     # Action buttons
     col1, col2, col3 = st.columns(3)
@@ -439,13 +646,13 @@ else:
     
     with col2:
         if st.button("← Back to Configuration", use_container_width=True):
-            st.session_state['current_step'] = 2
-            st.switch_page("pages/2_choose_design.py")
+            st.session_state['current_step'] = 3
+            st.switch_page("pages/3_choose_design.py")
     
     with col3:
         if st.button("Import Results →", type="primary", use_container_width=True):
-            st.session_state['current_step'] = 4
-            st.switch_page("pages/4_import_results.py")
+            st.session_state['current_step'] = 5
+            st.switch_page("pages/5_import_results.py")
 
 # Navigation
 if st.session_state.get('design') is None:
@@ -455,5 +662,5 @@ if st.session_state.get('design') is None:
     
     with col1:
         if st.button("← Back to Configuration", use_container_width=True):
-            st.session_state['current_step'] = 2
-            st.switch_page("pages/2_choose_design.py")
+            st.session_state['current_step'] = 3
+            st.switch_page("pages/3_choose_design.py")

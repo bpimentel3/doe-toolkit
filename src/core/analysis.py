@@ -341,7 +341,11 @@ class ANOVAAnalysis:
     def _build_formula(self, model_terms: List[str]) -> str:
         """Build formula - terms already in patsy notation."""
         terms = [t for t in model_terms if t != '1']
-        formula_rhs = ' + '.join(terms)
+        if not terms:
+            # Intercept-only model
+            formula_rhs = '1'
+        else:
+            formula_rhs = ' + '.join(terms)
         return f"{self.response_name} ~ {formula_rhs}"
     
     def _build_results_object(self, fitted_model, model_terms: List[str], is_split_plot: bool) -> ANOVAResults:

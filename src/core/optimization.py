@@ -203,9 +203,9 @@ def optimize_response(
     
     # Build bounds
     if bounds is None:
-        bounds_list = [(f.min, f.max) for f in factors]
+        bounds_list = [(f.min_value, f.max_value) for f in factors]
     else:
-        bounds_list = [bounds.get(f.name, (f.min, f.max)) for f in factors]
+        bounds_list = [bounds.get(f.name, (f.min_value, f.max_value)) for f in factors]
     
     # Build objective function
     def objective_func(x: np.ndarray) -> float:
@@ -229,13 +229,13 @@ def optimize_response(
         )
     
     # Starting point: center of design space
-    x0 = np.array([(f.min + f.max) / 2 for f in factors])
+    x0 = np.array([(f.min_value + f.max_value) / 2 for f in factors])
     
     # Add random perturbation if seed provided
     if seed is not None:
         rng = np.random.default_rng(seed)
         perturbation = rng.uniform(-0.1, 0.1, size=len(factors))
-        ranges = np.array([f.max - f.min for f in factors])
+        ranges = np.array([f.max_value - f.min_value for f in factors])
         x0 = x0 + perturbation * ranges
         x0 = np.clip(x0, [b[0] for b in bounds_list], [b[1] for b in bounds_list])
     
@@ -684,9 +684,9 @@ def optimize_desirability(
     
     # Build bounds
     if bounds is None:
-        bounds_list = [(f.min, f.max) for f in factors]
+        bounds_list = [(f.min_value, f.max_value) for f in factors]
     else:
-        bounds_list = [bounds.get(f.name, (f.min, f.max)) for f in factors]
+        bounds_list = [bounds.get(f.name, (f.min_value, f.max_value)) for f in factors]
     
     # Build objective function (maximize overall desirability)
     def objective_func(x: np.ndarray) -> float:
@@ -713,12 +713,12 @@ def optimize_desirability(
         )
     
     # Starting point
-    x0 = np.array([(f.min + f.max) / 2 for f in factors])
+    x0 = np.array([(f.min_value + f.max_value) / 2 for f in factors])
     
     if seed is not None:
         rng = np.random.default_rng(seed)
         perturbation = rng.uniform(-0.1, 0.1, size=len(factors))
-        ranges = np.array([f.max - f.min for f in factors])
+        ranges = np.array([f.max_value - f.min_value for f in factors])
         x0 = x0 + perturbation * ranges
         x0 = np.clip(x0, [b[0] for b in bounds_list], [b[1] for b in bounds_list])
     

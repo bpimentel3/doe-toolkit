@@ -317,7 +317,7 @@ def generate_split_plot_design(
                 # Sub-plot factors go to center
                 for f in sub_plot_factors:
                     if f.factor_type in (FactorType.CONTINUOUS, FactorType.DISCRETE_NUMERIC):
-                        center_run[f.name] = (f.max + f.min) / 2
+                        center_run[f.name] = (f.max_value + f.min_value) / 2
                     else:
                         # For categorical, use first level (arbitrary choice)
                         center_run[f.name] = f.levels[0]

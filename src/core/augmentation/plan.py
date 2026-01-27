@@ -51,7 +51,7 @@ class FoldoverConfig:
 @dataclass
 class OptimalAugmentConfig:
     """
-    Configuration for D-optimal augmentation.
+    Configuration for optimal augmentation (D-optimal or I-optimal).
     
     Attributes
     ----------
@@ -60,11 +60,16 @@ class OptimalAugmentConfig:
     n_runs_to_add : int
         Number of runs to add
     criterion : {'D', 'I'}, default='D'
-        Optimality criterion (D-optimal for now, I-optimal future)
+        Optimality criterion:
+        - 'D': D-optimal (maximize det(X'X), best for parameter estimates)
+        - 'I': I-optimal (minimize avg prediction variance, best for prediction)
+    prediction_grid_config : dict, optional
+        Configuration for I-optimal prediction grid (ignored for D-optimal)
     """
     new_model_terms: List[str]
     n_runs_to_add: int
     criterion: Literal['D', 'I'] = 'D'
+    prediction_grid_config: Optional[dict] = None
 
 
 @dataclass
