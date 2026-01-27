@@ -7,7 +7,11 @@ using coordinate exchange optimization with various optimality criteria.
 Main Functions
 --------------
 generate_d_optimal_design
-    Generate D-optimal experimental design
+    Generate D-optimal experimental design (legacy API)
+generate_optimal_design
+    Generate optimal design with selectable criterion (D or I)
+compute_i_efficiency
+    Calculate I-efficiency relative to benchmark design
 
 Key Classes
 -----------
@@ -22,7 +26,7 @@ OptimizerConfig
 
 Examples
 --------
->>> from src.core.optimal import generate_d_optimal_design, LinearConstraint
+>>> from src.core.optimal import generate_optimal_design
 >>> from src.core.factors import Factor, FactorType, ChangeabilityLevel
 >>>
 >>> factors = [
@@ -30,19 +34,32 @@ Examples
 ...     Factor("Press", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, [50, 100])
 ... ]
 >>>
->>> result = generate_d_optimal_design(
+>>> # D-optimal design (parameter estimation)
+>>> result_d = generate_optimal_design(
 ...     factors=factors,
 ...     model_type='quadratic',
 ...     n_runs=15,
+...     criterion='D',
 ...     seed=42
 ... )
->>> print(result.design_actual)
+>>>
+>>> # I-optimal design (prediction)
+>>> result_i = generate_optimal_design(
+...     factors=factors,
+...     model_type='quadratic',
+...     n_runs=15,
+...     criterion='I',
+...     prediction_grid_config={'n_points_per_dim': 7},
+...     seed=42
+... )
 """
 
 # Main API
 from src.core.optimal.design_generation import (
     OptimizationResult,
+    compute_i_efficiency,
     generate_d_optimal_design,
+    generate_optimal_design,
 )
 
 # Configuration classes
@@ -57,11 +74,14 @@ from src.core.optimal.criteria import (
     OptimalityCriterion,
     create_optimality_criterion,
     create_polynomial_builder,
+    generate_prediction_grid,
 )
 
 __all__ = [
     # Main API
+    "generate_optimal_design",
     "generate_d_optimal_design",
+    "compute_i_efficiency",
     "OptimizationResult",
     # Configuration
     "LinearConstraint",
@@ -73,4 +93,5 @@ __all__ = [
     "IOptimalityCriterion",
     "create_optimality_criterion",
     "create_polynomial_builder",
+    "generate_prediction_grid",
 ]

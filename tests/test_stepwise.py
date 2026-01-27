@@ -43,7 +43,7 @@ class TestBICComputation:
         np.random.seed(42)
         n = 30
         x1 = np.linspace(-1, 1, n)
-        x2 = np.linspace(-1, 1, n)
+        x2 = np.random.uniform(-1, 1, n)  # Use random values to avoid multicollinearity
         # True model: y = 1 + 2*x1 + 3*x2
         y = 1 + 2*x1 + 3*x2 + np.random.normal(0, 0.3, n)
         
@@ -137,7 +137,7 @@ class TestStepwiseSelection:
         np.random.seed(42)
         n = 40
         x1 = np.linspace(-1, 1, n)
-        x2 = np.linspace(-1, 1, n)
+        x2 = np.random.uniform(-1, 1, n)  # Use random values to avoid multicollinearity
         # True model: y = 1 + 3*x1 (x2 is noise)
         y = 1 + 3*x1 + np.random.normal(0, 0.5, n)
         

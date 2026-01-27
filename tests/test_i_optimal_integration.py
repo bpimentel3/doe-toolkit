@@ -17,7 +17,7 @@ from src.core.augmentation.goals import AugmentationGoal
 from src.core.augmentation.goal_driven import (
     GoalDrivenContext,
     recommend_from_goal,
-    _create_strategy_config
+    _create_strategy_config,
 )
 from src.core.diagnostics import DesignDiagnosticSummary
 

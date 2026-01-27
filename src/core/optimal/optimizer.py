@@ -297,7 +297,7 @@ def cexch_optimize(
     X_model_candidates = model_builder(candidates)
     p = X_model_candidates.shape[1]
 
-    best_logdet = -np.inf
+    best_objective = -np.inf
     best_indices = None
     best_n_iter = 0
     best_converged_by = ""
@@ -313,14 +313,14 @@ def cexch_optimize(
 
         try:
             XtX_inv = np.linalg.inv(XtX)
-            sign, logdet = np.linalg.slogdet(XtX)
+            objective = criterion.objective(X_current)
         except np.linalg.LinAlgError:
             continue
 
-        if sign <= 0:
+        if objective < -1e9:  # Invalid design
             continue
 
-        logdet_history = [logdet]
+        objective_history = [objective]
         no_improvement_count = 0
         converged_by = "max_iterations"
 
@@ -330,7 +330,7 @@ def cexch_optimize(
             # Try improving each row
             for i in range(n_runs):
                 x_old = X_current[i]
-                best_logdet_for_i = logdet
+                best_objective_for_i = objective
                 best_idx_for_i = indices[i]
                 best_sm_result = None  # Store SM result for best candidate
 
@@ -368,27 +368,23 @@ def cexch_optimize(
                         # Compute SM update ONCE (returns both ratio and inverse)
                         sm_result = sherman_morrison_swap(XtX_inv, x_old, x_new)
 
-                        if not sm_result.is_valid or sm_result.det_ratio <= 0:
+                        if not sm_result.is_valid:
                             continue
 
-                        logdet_trial = logdet + np.log(sm_result.det_ratio)
+                        # Use updated inverse to compute objective
+                        X_trial = X_current.copy()
+                        X_trial[i] = x_new
+                        objective_trial = criterion.objective(X_trial)
                     else:
                         # Fallback: explicit computation
                         X_trial = X_current.copy()
                         X_trial[i] = x_new
-                        XtX_trial = X_trial.T @ X_trial + 1e-10 * np.eye(p)
-
-                        try:
-                            sign_trial, logdet_trial = np.linalg.slogdet(XtX_trial)
-                            if sign_trial <= 0:
-                                continue
-                            sm_result = None
-                        except:
-                            continue
+                        objective_trial = criterion.objective(X_trial)
+                        sm_result = None
 
                     # Accept if better
-                    if logdet_trial > best_logdet_for_i + 1e-10:
-                        best_logdet_for_i = logdet_trial
+                    if objective_trial > best_objective_for_i + 1e-10:
+                        best_objective_for_i = objective_trial
                         best_idx_for_i = cand_idx
                         best_sm_result = sm_result  # Store for reuse
 
@@ -410,10 +406,10 @@ def cexch_optimize(
 
                     X_current[i] = x_new
                     indices[i] = best_idx_for_i
-                    logdet = best_logdet_for_i
+                    objective = best_objective_for_i
                     improved_this_iter = True
 
-            logdet_history.append(logdet)
+            objective_history.append(objective)
 
             # Check stopping
             if improved_this_iter:
@@ -426,9 +422,9 @@ def cexch_optimize(
                 break
 
             # Relative improvement check
-            if len(logdet_history) >= config.stability_window:
-                old_val = logdet_history[-config.stability_window]
-                new_val = logdet_history[-1]
+            if len(objective_history) >= config.stability_window:
+                old_val = objective_history[-config.stability_window]
+                new_val = objective_history[-1]
 
                 if abs(old_val) > 1e-10:
                     rel_improvement = (new_val - old_val) / abs(old_val)
@@ -437,13 +433,13 @@ def cexch_optimize(
                         converged_by = "stability"
                         break
 
-        n_iter = len(logdet_history) - 1
+        n_iter = len(objective_history) - 1
 
         # Keep best across starts
-        if logdet > best_logdet:
-            best_logdet = logdet
+        if objective > best_objective:
+            best_objective = objective
             best_indices = indices.copy()
             best_n_iter = n_iter
             best_converged_by = converged_by
 
-    return best_indices, best_logdet, best_n_iter, best_converged_by
+    return best_indices, best_objective, best_n_iter, best_converged_by

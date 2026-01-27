@@ -488,7 +488,7 @@ def compute_i_criterion(
            split-plot response surface designs. Journal of Quality
            Technology, 44(2), 85-101.
     """
-    from src.core.optimal_design import generate_prediction_grid
+    from src.core.optimal.criteria import generate_prediction_grid
     
     # Build model matrix for design
     X = build_model_matrix(design, factors, model_terms)

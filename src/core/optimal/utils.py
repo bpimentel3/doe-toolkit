@@ -14,12 +14,12 @@ decode_point
     Convert coded values to actual scale
 compute_d_efficiency_vs_benchmark
     Calculate D-efficiency relative to benchmark
-compute_benchmark_determinant
-    Generate benchmark design for comparison
+compute_benchmark_criterion
+    Generate benchmark design for comparison (supports D and I criteria)
 """
 
 import warnings
-from typing import List, Literal, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 
@@ -175,17 +175,21 @@ def compute_d_efficiency_vs_benchmark(
 # ============================================================
 
 
-def compute_benchmark_determinant(
+def compute_benchmark_criterion(
     factors: List[Factor],
     model_type: Literal["linear", "interaction", "quadratic"],
     model_builder: ModelMatrixBuilder,
+    criterion_type: Literal["D", "I"] = "D",
+    prediction_grid_config: Optional[Dict] = None,
 ) -> Tuple[float, str]:
     """
-    Compute determinant of benchmark design for comparison.
+    Compute criterion value of benchmark design for comparison.
 
     Uses designs constrained to [-1, 1]^k space for fair comparison:
     - Linear models: Full Factorial 2^k
     - Quadratic models: Face-Centered CCD (alpha='face', stays in bounds)
+
+    Supports both D-optimality (determinant) and I-optimality (avg prediction variance).
 
     Parameters
     ----------
@@ -195,11 +199,19 @@ def compute_benchmark_determinant(
         Type of model
     model_builder : ModelMatrixBuilder
         Function to build model matrix
+    criterion_type : {'D', 'I'}, default='D'
+        Which criterion to compute:
+        - 'D': Determinant of X'X
+        - 'I': Average scaled prediction variance
+    prediction_grid_config : dict, optional
+        Configuration for prediction grid (only used for I-optimality)
 
     Returns
     -------
-    det : float
-        Determinant of X'X for benchmark design
+    criterion_value : float
+        Criterion value for benchmark design:
+        - For D: determinant of X'X
+        - For I: average scaled prediction variance
     design_name : str
         Name of benchmark design used
 
@@ -215,37 +227,41 @@ def compute_benchmark_determinant(
 
     Examples
     --------
-    >>> det, name = compute_benchmark_determinant(
-    ...     factors, 'quadratic', model_builder
+    >>> # D-optimality benchmark
+    >>> det, name = compute_benchmark_criterion(
+    ...     factors, 'quadratic', model_builder, criterion_type='D'
     ... )
     >>> print(f"Benchmark: {name}, det={det:.2e}")
-    Benchmark: Face-Centered CCD (k=4), det=1.23e+10
+    
+    >>> # I-optimality benchmark
+    >>> i_crit, name = compute_benchmark_criterion(
+    ...     factors, 'quadratic', model_builder, criterion_type='I',
+    ...     prediction_grid_config={'n_points_per_dim': 5}
+    ... )
+    >>> print(f"Benchmark: {name}, I={i_crit:.4f}")
     """
     k = len(factors)
 
+    # Generate benchmark design
     if model_type == "linear":
         # Benchmark: Full Factorial 2^k
         if k > 10:
             warnings.warn(
                 f"Benchmark computation skipped: 2^{k} = {2**k} runs is too large. "
-                "D-efficiency will be reported as 100%."
+                f"Efficiency will be reported as 100%."
             )
             return 1.0, f"Full Factorial 2^{k} (not computed)"
 
         from itertools import product
 
-        ff_coded = np.array(list(product([-1, 1], repeat=k)))
-        X_ff = model_builder(ff_coded)
-        det_ff = np.linalg.det(X_ff.T @ X_ff)
-        return det_ff, f"Full Factorial 2^{k}"
+        benchmark_coded = np.array(list(product([-1, 1], repeat=k)))
+        design_name = f"Full Factorial 2^{k}"
 
     elif model_type in ("interaction", "quadratic"):
         # Benchmark: Face-Centered CCD (alpha='face')
-        # This stays within [-1, 1]^k bounds for fair comparison with D-optimal
         from src.core.response_surface import CentralCompositeDesign
         from src.core.factors import FactorType, ChangeabilityLevel
 
-        # Create temporary CCD
         temp_factors = [
             Factor(
                 f"X{i}",
@@ -256,21 +272,44 @@ def compute_benchmark_determinant(
             for i in range(k)
         ]
 
-        # Use face-centered design to stay in bounds
         ccd = CentralCompositeDesign(
             factors=temp_factors,
-            alpha="face",  # Face-centered: axial points on cube faces (alpha=1)
+            alpha="face",
             center_points=6 if k <= 4 else 5,
         )
         ccd_design = ccd.generate(randomize=False)
-
-        # Extract coded design (skip StdOrder, RunOrder, PointType)
         factor_cols = [f.name for f in temp_factors]
-        ccd_coded = ccd_design[factor_cols].values
-
-        X_ccd = model_builder(ccd_coded)
-        det_ccd = np.linalg.det(X_ccd.T @ X_ccd)
-        return det_ccd, f"Face-Centered CCD (k={k})"
+        benchmark_coded = ccd_design[factor_cols].values
+        design_name = f"Face-Centered CCD (k={k})"
 
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
+
+    # Compute requested criterion
+    X_benchmark = model_builder(benchmark_coded)
+
+    if criterion_type == "D":
+        # Compute determinant
+        det_benchmark = np.linalg.det(X_benchmark.T @ X_benchmark)
+        return det_benchmark, design_name
+
+    elif criterion_type == "I":
+        # Compute I-criterion (average scaled prediction variance)
+        from src.core.diagnostics.variance import compute_i_criterion
+        from src.core.analysis import generate_model_terms
+        import pandas as pd
+        
+        # Generate model terms
+        model_terms = generate_model_terms(factors, model_type, include_intercept=True)
+        
+        # Convert benchmark design to DataFrame
+        benchmark_df = pd.DataFrame(benchmark_coded, columns=[f.name for f in factors])
+        
+        # Compute I-criterion
+        i_benchmark = compute_i_criterion(
+            benchmark_df, factors, model_terms, prediction_grid_config
+        )
+        return i_benchmark, design_name
+
+    else:
+        raise ValueError(f"Unknown criterion_type: {criterion_type}")

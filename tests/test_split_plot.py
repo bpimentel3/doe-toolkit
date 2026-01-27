@@ -6,15 +6,12 @@ import pytest
 import numpy as np
 import pandas as pd
 
-import sys
-sys.path.insert(0, 'src/core')
-
-from split_plot import (
+from src.core.split_plot import (
     generate_split_plot_design,
     evaluate_split_plot_design,
     SplitPlotDesign
 )
-from factors import Factor, FactorType, ChangeabilityLevel
+from src.core.factors import Factor, FactorType, ChangeabilityLevel
 
 
 class TestBasicSplitPlot:
