@@ -36,7 +36,6 @@ from src.ui.components.model_builder import display_model_builder, format_term_f
 from src.ui.components.diagnostics_display import display_diagnostics_tab
 from src.ui.components.lof_testing import display_lack_of_fit_test
 from src.ui.components.profiler_display import display_profiler_tab
-from src.ui.components.sidebar import build_standard_sidebar
 from src.core.analysis import ANOVAAnalysis, generate_model_terms
 
 
@@ -45,6 +44,7 @@ from src.core.analysis import ANOVAAnalysis, generate_model_terms
 initialize_session_state()
 
 # Add standard sidebar
+from src.ui.components.sidebar import build_standard_sidebar
 build_standard_sidebar()
 
 if not can_access_step(5):
