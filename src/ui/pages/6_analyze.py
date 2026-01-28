@@ -28,6 +28,7 @@ from src.ui.utils.state_management import (
 from src.ui.components.quality_dashboard import display_quality_dashboard
 from src.ui.components.model_builder import display_model_builder, format_term_for_display, display_stepwise_button
 from src.ui.components.diagnostics_display import display_diagnostics_tab
+from src.ui.components.profiler_display import display_profiler_tab
 from src.core.analysis import ANOVAAnalysis, generate_model_terms
 from src.core.diagnostics.summary import (
     compute_design_diagnostic_summary,
@@ -506,8 +507,22 @@ with tab3:
         model_terms_per_response=st.session_state.get('model_terms_per_response', {}),
         format_term_for_display=format_term_for_display,
     )
-    
+
 with tab4:
+    # Check model availability
+    if selected_response not in st.session_state['fitted_models']:
+        st.warning("Please fit a model first")
+        st.stop()
+    
+    results = st.session_state['fitted_models'][selected_response]
+    
+    # Use profiler display component
+    display_profiler_tab(
+        selected_response=selected_response,
+        results=results,
+        factors=factors,
+        format_term_for_display=format_term_for_display,
+    )
     st.subheader("📊 Prediction Profiler")
     st.caption("Interactive prediction profiler - adjust factor settings and see how the response changes.")
     
