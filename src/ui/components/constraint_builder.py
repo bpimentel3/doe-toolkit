@@ -7,7 +7,7 @@ Used in D-Optimal design and augmentation workflows.
 import streamlit as st
 from typing import List, Dict, Tuple, Optional
 from src.core.factors import Factor
-from src.core.optimal_design import LinearConstraint
+from src.core.optimal import LinearConstraint
 
 
 def format_constraint_preview(

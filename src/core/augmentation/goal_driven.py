@@ -183,6 +183,9 @@ def _generate_goal_plan(
     # Get goal description
     goal_desc = GOAL_CATALOG[goal]
     
+    # Extract current model terms for optimal augmentation
+    current_model_terms = _get_current_model_terms(diagnostics)
+    
     # Create plan
     plan = AugmentationPlan(
         plan_id=create_plan_id(),
@@ -210,7 +213,8 @@ def _generate_goal_plan(
             'is_primary_strategy': is_primary,
             'strategy_rationale': strategy_mapping.strategy_rationale,
             'estimated_min_runs': strategy_mapping.estimated_min_runs,
-            'estimated_max_runs': strategy_mapping.estimated_max_runs
+            'estimated_max_runs': strategy_mapping.estimated_max_runs,
+            'current_model_terms': current_model_terms  # Required for optimal augmentation
         }
     )
     
@@ -364,6 +368,39 @@ def _determine_model_terms(
         return factor_names
 
 
+def _normalize_model_term(term: str) -> str:
+    """
+    Convert statsmodels/R notation to internal notation.
+    
+    Converts:
+    - 'a:b' -> 'a*b' (interactions)
+    - 'I(a ** 2)' stays as is
+    - Main effects stay as is
+    
+    Parameters
+    ----------
+    term : str
+        Term in statsmodels notation
+    
+    Returns
+    -------
+    str
+        Term in internal notation
+    """
+    # Skip intercept
+    if term == 'Intercept' or term == '1':
+        return '1'
+    
+    # Convert R/statsmodels interaction notation ':' to our notation '*'
+    if ':' in term:
+        # Split by ':' and rejoin with '*'
+        factors = term.split(':')
+        return '*'.join(factors)
+    
+    # Already in correct format
+    return term
+
+
 def _get_current_model_terms(diagnostics: DesignDiagnosticSummary) -> List[str]:
     """Extract current model terms from fitted models."""
     
@@ -372,11 +409,14 @@ def _get_current_model_terms(diagnostics: DesignDiagnosticSummary) -> List[str]:
         first_response = list(diagnostics.response_diagnostics.values())[0]
         
         # Combine significant and marginally significant
-        terms = (first_response.significant_effects + 
-                first_response.marginally_significant)
+        raw_terms = (first_response.significant_effects + 
+                    first_response.marginally_significant)
         
-        if terms:
-            return terms
+        if raw_terms:
+            # Normalize terms from statsmodels notation to internal notation
+            normalized = [_normalize_model_term(t) for t in raw_terms]
+            # Filter out intercept if present
+            return [t for t in normalized if t != '1']
     
     # Fallback: main effects
     return [f.name for f in diagnostics.factors]

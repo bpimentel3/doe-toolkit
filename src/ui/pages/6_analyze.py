@@ -33,296 +33,6 @@ from src.core.diagnostics.summary import (
     generate_quality_report
 )
 
-# ==================== COHESIVE PLOT STYLING ====================
-
-PLOT_COLORS = {
-    'primary': '#1f77b4',
-    'secondary': '#ff7f0e',
-    'success': '#2ca02c',
-    'danger': '#d62728',
-    'neutral': '#7f7f7f',
-    'purple': '#9467bd',
-    'brown': '#8c564b',
-    'pink': '#e377c2',
-    'sigma1': '#90EE90',  # Light green for 1σ
-    'sigma2': '#FFD700',  # Gold for 2σ
-    'sigma3': '#FF6347'   # Tomato red for 3σ
-}
-
-def apply_plot_style(fig):
-    """Apply consistent ACS-style formatting to plotly figures."""
-    # Update layout (background, font, margins)
-    fig.update_layout(
-        plot_bgcolor='white',  # White plot background
-        paper_bgcolor='white',  # White paper background
-        font=dict(family='Arial, sans-serif', size=11, color='#000000'),  # Full black text
-        margin=dict(l=50, r=30, t=30, b=50, pad=5)  # Tighter margins (~5%)
-    )
-    
-    # Update axes separately to preserve titles
-    fig.update_xaxes(
-        showgrid=True, gridwidth=0.5, gridcolor='#e0e0e0',  # Slightly darker gray for white background
-        linecolor='#000000', linewidth=1.5, mirror=True,
-        ticks='outside', tickwidth=1, tickcolor='#000000', showline=True,
-        tickfont=dict(color='#000000'),  # Ensure tick labels are black
-        title_font=dict(color='#000000')  # Ensure axis titles are black
-    )
-    
-    fig.update_yaxes(
-        showgrid=True, gridwidth=0.5, gridcolor='#e0e0e0',  # Slightly darker gray for white background
-        linecolor='#000000', linewidth=1.5, mirror=True,
-        ticks='outside', tickwidth=1, tickcolor='#000000', showline=True,
-        tickfont=dict(color='#000000'),  # Ensure tick labels are black
-        title_font=dict(color='#000000')  # Ensure axis titles are black
-    )
-    
-    return fig
-
-def create_parity_plot(actual, predicted, r_squared, adj_r_squared, rmse, p_value):
-    """Create actual vs predicted parity plot with 95% CI of the fit."""
-    min_val = min(actual.min(), predicted.min())
-    max_val = max(actual.max(), predicted.max())
-    margin = (max_val - min_val) * 0.1
-    plot_min = min_val - margin
-    plot_max = max_val + margin
-    
-    # Calculate 95% CI of the fit (not prediction interval)
-    n = len(actual)
-    residuals = actual - predicted
-    mse = np.mean(residuals**2)
-    
-    # For parity plot, CI is tighter near the mean
-    mean_actual = np.mean(actual)
-    x_line = np.linspace(plot_min, plot_max, 100)
-    
-    # Standard error of the fit
-    se_fit = np.sqrt(mse * (1/n + (x_line - mean_actual)**2 / np.sum((actual - mean_actual)**2)))
-    t_crit = stats.t.ppf(0.975, n-2)  # 95% CI
-    ci_width = t_crit * se_fit
-    
-    fig = go.Figure()
-    
-    # 95% CI band (around 1:1 line)
-    y_upper = x_line + ci_width
-    y_lower = x_line - ci_width
-    
-    # Add shaded CI region
-    fig.add_trace(go.Scatter(
-        x=np.concatenate([x_line, x_line[::-1]]),
-        y=np.concatenate([y_upper, y_lower[::-1]]),
-        fill='toself', fillcolor='rgba(128, 128, 128, 0.25)',
-        line=dict(width=0), showlegend=False, hoverinfo='skip'
-    ))
-    
-    hover_text = [f"Run {i+1}<br>Actual: {a:.3f}<br>Predicted: {p:.3f}" 
-                  for i, (a, p) in enumerate(zip(actual, predicted))]
-    
-    fig.add_trace(go.Scatter(
-        x=actual, y=predicted, mode='markers',
-        marker=dict(size=8, color=PLOT_COLORS['primary'], opacity=0.7,
-                   line=dict(width=0.5, color='white')),
-        name='Data', text=hover_text, hovertemplate='%{text}<extra></extra>',
-        showlegend=False
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=[plot_min, plot_max], y=[plot_min, plot_max], mode='lines',
-        line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2),
-        name='1:1 Line', hoverinfo='skip', showlegend=False
-    ))
-    
-    stats_text = (f"R² = {r_squared:.4f}<br>Adj R² = {adj_r_squared:.4f}<br>"
-                  f"RMSE = {rmse:.4f}<br>p = {p_value:.4e}")
-    
-    fig.add_annotation(
-        xref='paper', yref='paper', x=0.05, y=0.95, text=stats_text,
-        showarrow=False, font=dict(size=10, color='#000000'), 
-        bgcolor='rgba(255, 255, 255, 0.95)',  # White box with high opacity for readability
-        bordercolor='#000000', borderwidth=1, align='left'
-    )
-    
-    fig.update_layout(
-        xaxis_title='Actual', yaxis_title='Predicted', height=400,
-        showlegend=False
-    )
-    
-    fig.update_xaxes(scaleanchor='y', scaleratio=1, range=[plot_min, plot_max])
-    fig.update_yaxes(scaleanchor='x', scaleratio=1, range=[plot_min, plot_max])
-    
-    return apply_plot_style(fig)
-
-def create_residual_plot(fitted, residuals):
-    """Create studentized residuals vs fitted with color-coded thresholds."""
-    # Calculate studentized residuals
-    std_resid = np.std(residuals)
-    studentized = residuals / std_resid
-    
-    fig = go.Figure()
-    
-    x_range = [fitted.min(), fitted.max()]
-    
-    # Zero line
-    fig.add_trace(go.Scatter(
-        x=x_range, y=[0, 0], mode='lines',
-        line=dict(color='#000000', dash='solid', width=1.5),
-        showlegend=False, hoverinfo='skip'
-    ))
-    
-    # Sigma reference lines with increased opacity
-    for sigma, color in [(1, PLOT_COLORS['sigma1']), 
-                          (2, PLOT_COLORS['sigma2']), 
-                          (3, PLOT_COLORS['sigma3'])]:
-        for sign in [1, -1]:
-            y_val = sign * sigma
-            # Convert hex color to rgba with opacity
-            if color == PLOT_COLORS['sigma1']:
-                rgba_color = 'rgba(144, 238, 144, 0.8)'  # Light green
-            elif color == PLOT_COLORS['sigma2']:
-                rgba_color = 'rgba(255, 215, 0, 0.8)'    # Gold
-            else:
-                rgba_color = 'rgba(255, 99, 71, 0.8)'   # Tomato red
-            
-            fig.add_trace(go.Scatter(
-                x=x_range, y=[y_val, y_val], mode='lines',
-                line=dict(color=rgba_color, dash='dash', width=2),
-                showlegend=False, hoverinfo='skip'
-            ))
-    
-    # All data points same color (no color coding)
-    hover_text = [f"Run {i+1}<br>Fitted: {f:.3f}<br>Studentized: {s:.3f}" 
-                  for i, (f, s) in enumerate(zip(fitted, studentized))]
-    
-    fig.add_trace(go.Scatter(
-        x=fitted, y=studentized, mode='markers',
-        marker=dict(size=8, color=PLOT_COLORS['primary'], opacity=0.7,
-                   line=dict(width=0.5, color='white')),
-        name='Residuals', text=hover_text, hovertemplate='%{text}<extra></extra>',
-        showlegend=False
-    ))
-    
-    fig.update_layout(
-        xaxis_title='Fitted Values', yaxis_title='Studentized Residuals',
-        height=400, showlegend=False
-    )
-    
-    y_max = max(abs(studentized.min()), abs(studentized.max()))
-    y_max = max(y_max, 3.5) * 1.1  # At least show ±3σ range
-    fig.update_yaxes(range=[-y_max, y_max])
-    
-    x_range_val = fitted.max() - fitted.min()
-    fig.update_xaxes(range=[fitted.min() - 0.1*x_range_val, 
-                           fitted.max() + 0.1*x_range_val])
-    
-    return apply_plot_style(fig)
-
-def create_logworth_plot(logworth_df, p_values):
-    """Create LogWorth bar plot sorted Pareto-style with p-values on bars."""
-    logworth_sorted = logworth_df.sort_values('LogWorth', ascending=True)
-    p_values_sorted = [p_values[term] for term in logworth_sorted.index]
-    
-    p_text = [f"p={p:.4f}" if p >= 0.0001 else f"p={p:.2e}" 
-              for p in p_values_sorted]
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Bar(
-        x=logworth_sorted['LogWorth'], y=logworth_sorted.index, orientation='h',
-        marker=dict(color=PLOT_COLORS['primary'], 
-                   line=dict(color='#000000', width=0.5)),
-        text=p_text, textposition='outside', textfont=dict(size=10),
-        hovertemplate='%{y}<br>LogWorth: %{x:.2f}<br>%{text}<extra></extra>'
-    ))
-    
-    threshold = -np.log10(0.05)
-    fig.add_vline(
-        x=threshold, line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2),
-        annotation=dict(text='α=0.05', textangle=0, yref='paper', y=0.95, font=dict(size=10))
-    )
-    
-    fig.update_layout(
-        xaxis_title='LogWorth (-log₁₀(p))', yaxis_title='',
-        height=max(250, len(logworth_sorted) * 25),
-        showlegend=False, margin=dict(l=150, r=100)
-    )
-    
-    return apply_plot_style(fig)
-
-def create_qq_plot(residuals):
-    """Create Q-Q normal probability plot."""
-    # Properly calculate theoretical quantiles using plotting positions
-    n = len(residuals)
-    # Use plotting position: (i - 0.5) / n
-    probabilities = (np.arange(1, n+1) - 0.5) / n
-    theoretical = stats.norm.ppf(probabilities)
-    sample = np.sort(residuals)
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=theoretical, y=sample, mode='markers',
-        marker=dict(size=8, color=PLOT_COLORS['primary'], opacity=0.7,
-                   line=dict(width=0.5, color='white')),
-        name='Data', hovertemplate='Theoretical: %{x:.3f}<br>Sample: %{y:.3f}<extra></extra>'
-    ))
-    
-    min_val = min(theoretical.min(), sample.min())
-    max_val = max(theoretical.max(), sample.max())
-    
-    fig.add_trace(go.Scatter(
-        x=[min_val, max_val], y=[min_val, max_val], mode='lines',
-        line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2),
-        showlegend=False, hoverinfo='skip'
-    ))
-    
-    fig.update_layout(
-        xaxis_title='Theoretical Quantiles', yaxis_title='Sample Quantiles',
-        height=350, showlegend=False
-    )
-    
-    return apply_plot_style(fig)
-
-def create_half_normal_plot(effects, effect_names):
-    """Create half-normal probability plot for effects."""
-    abs_effects = np.abs(effects)
-    sorted_indices = np.argsort(abs_effects)
-    sorted_effects = abs_effects[sorted_indices]
-    sorted_names = [effect_names[i] for i in sorted_indices]
-    
-    n = len(sorted_effects)
-    quantiles = stats.norm.ppf((np.arange(1, n+1) - 0.5) / n)
-    half_normal_quantiles = np.abs(quantiles)
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=half_normal_quantiles, y=sorted_effects, mode='markers+text',
-        marker=dict(size=8, color=PLOT_COLORS['primary'], opacity=0.7,
-                   line=dict(width=0.5, color='white')),
-        text=sorted_names, textposition='top center', textfont=dict(size=9),
-        hovertemplate='%{text}<br>|Effect|: %{y:.3f}<extra></extra>'
-    ))
-    
-    if len(sorted_effects) > 2:
-        n_baseline = max(3, len(sorted_effects) // 3)
-        lr = LinearRegression()
-        lr.fit(half_normal_quantiles[:n_baseline].reshape(-1, 1), 
-               sorted_effects[:n_baseline])
-        
-        x_line = np.array([0, half_normal_quantiles.max()])
-        y_line = lr.predict(x_line.reshape(-1, 1))
-        
-        fig.add_trace(go.Scatter(
-            x=x_line, y=y_line, mode='lines',
-            line=dict(color=PLOT_COLORS['danger'], dash='dash', width=2),
-            showlegend=False, hoverinfo='skip'
-        ))
-    
-    fig.update_layout(
-        xaxis_title='Half-Normal Quantiles', yaxis_title='|Effect|',
-        height=400, showlegend=False
-    )
-    
-    return apply_plot_style(fig)
 
 # ==================== MAIN APP ====================
 
@@ -386,46 +96,12 @@ updated_terms = display_model_builder(
     key_prefix=f"model_builder_{selected_response}"
 )
 
-# Check model compatibility with design type
-design_type = st.session_state.get('design_type', '')
+# Force update if terms changed
 if updated_terms != current_terms:
-    # Check for incompatible terms
-    warnings = []
-    
-    has_quadratic = any(t.startswith('I(') and '**2' in t for t in updated_terms)
-    has_cubic = any(t.startswith('I(') and '**3' in t for t in updated_terms)
-    
-    if design_type == "Fractional Factorial" and has_quadratic:
-        warnings.append(
-            "⚠️ **Warning:** Fractional factorial designs typically cannot estimate quadratic terms. "
-            "You may encounter aliasing or rank deficiency issues."
-        )
-    
-    if design_type == "Full Factorial" and has_quadratic:
-        # Check if we have center points
-        design = get_active_design()
-        has_center = st.session_state.get('design_config', {}).get('n_center_points', 0) > 0
-        
-        if not has_center:
-            warnings.append(
-                "⚠️ **Warning:** Your model includes quadratic terms, but full factorial designs "
-                "without center points cannot estimate pure quadratic effects (they're aliased with interactions). "
-                "Consider using Response Surface design or adding center points."
-            )
-    
-    if design_type == "Latin Hypercube" and (has_quadratic or len([t for t in updated_terms if '*' in t]) > 0):
-        warnings.append(
-            "💡 **Note:** Latin Hypercube designs are primarily for main effects screening. "
-            "Interaction and quadratic terms can be fit but may have limited power."
-        )
-    
-    # Display warnings
-    for warning in warnings:
-        st.warning(warning)
-    
     st.session_state['model_terms_per_response'][selected_response] = updated_terms
     invalidate_downstream_state(from_step=5)
     st.rerun()
+
 
 st.divider()
 
@@ -477,10 +153,30 @@ with st.spinner(f"Fitting model for {selected_response}..."):
             st.session_state['fitted_models'] = {}
         st.session_state['fitted_models'][selected_response] = results
         
+        # Store analysis object for stepwise regression
+        st.session_state[f'analysis_{selected_response}'] = analysis
+        
     except Exception as e:
         st.error(f"Model fitting failed: {e}")
         st.exception(e)
         st.stop()
+
+# ==== STEPWISE REGRESSION (BIC-based Automatic Model Selection) ====
+# Display AFTER model fitting so we have the analysis object
+st.divider()
+stepwise_results = display_stepwise_button(
+    factors=factors,
+    anova_analysis=analysis,
+    key_prefix=f"stepwise_{selected_response}"
+)
+
+# If stepwise returned results, update model terms
+if stepwise_results is not None:
+    st.session_state['model_terms_per_response'][selected_response] = stepwise_results.final_terms
+    invalidate_downstream_state(from_step=5)
+    st.rerun()
+
+st.divider()
 
 st.subheader("📈 Analysis Results")
 
@@ -1493,23 +1189,6 @@ with tab4:
                 
             except Exception as e:
                 st.error(f"Could not create 3D surface plot: {e}")
-    
-# ==== STEPWISE REGRESSION BUTTON ====
-# Display after model fitting is complete
-st.divider()
-
-stepwise_results = display_stepwise_button(
-    factors=factors,
-    anova_analysis=analysis,  # Use the analysis object from model fitting above
-    key_prefix=f"stepwise_{selected_response}"
-)
-
-# If stepwise returned results, update model terms
-if stepwise_results is not None:
-    st.session_state['model_terms_per_response'][selected_response] = stepwise_results.final_terms
-    invalidate_downstream_state(from_step=5)
-    st.rerun()
-
 st.divider()
 
 col1, col2, col3 = st.columns([1, 1, 1])

@@ -31,6 +31,15 @@ initialize_session_state()
 with st.sidebar:
     st.image("https://via.placeholder.com/200x80/4A90E2/ffffff?text=DOE+Toolkit", use_container_width=True)
     
+    # Restart session button at top of sidebar
+    if st.button("🔄 Restart Session", use_container_width=True, type="secondary"):
+        # Clear all session state
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+    
+    st.divider()
+    
     # Use standard sidebar
     from src.ui.components.sidebar import build_standard_sidebar
     build_standard_sidebar()

@@ -109,7 +109,7 @@ def recommend_from_diagnostics(
             if budget_constraint is None or plan.n_runs_to_add <= budget_constraint:
                 plans.append(plan)
     
-    # Rank plans by priority and utility
+    # Rank plans by priority
     plans = _rank_plans(plans)
     
     return plans
@@ -433,7 +433,7 @@ def _recommendation_to_plan(
         },
         benefits_responses=_get_affected_responses(rec.issue, diagnostics),
         primary_beneficiary=_get_primary_beneficiary(rec.issue, diagnostics),
-        experimental_cost=float(rec.n_runs_to_add),  # Simplified cost model
+        experimental_cost=float(rec.n_runs_to_add),
         utility_score=_compute_utility_score(rec, diagnostics),
         rank=rec.priority,
         metadata={
@@ -503,45 +503,72 @@ def _compute_utility_score(
     diagnostics: DesignDiagnosticSummary
 ) -> float:
     """
-    Compute utility score (0-100) for this recommendation.
+    Compute utility score based on issue severity only.
     
-    Higher score = better benefit/cost ratio.
+    The score simply reflects how critical the issue is. All ranking is done
+    by issue priority (aliasing > estimability > LOF > precision > pure error).
+    
+    Parameters
+    ----------
+    rec : DiagnosticAugmentationRecommendation
+        The recommendation
+    diagnostics : DesignDiagnosticSummary
+        Design diagnostics (not used, kept for signature compatibility)
+    
+    Returns
+    -------
+    float
+        Score from 0-100, where higher = more severe issue
+    
+    Notes
+    -----
+    Previous versions included cost and priority penalties, but these were
+    arbitrary and confusing. The simple severity-based score makes it clear
+    that critical issues need attention regardless of cost.
     """
     
-    # Base score by severity
+    # Simple scoring: severity determines the score
+    # Priority/ranking is handled separately in _rank_plans
     severity_scores = {
-        'critical': 90.0,
-        'warning': 60.0,
-        'info': 30.0
+        'critical': 100.0,
+        'warning': 70.0,
+        'info': 40.0
     }
     
-    base_score = severity_scores.get(rec.issue.severity, 50.0)
-    
-    # Adjust for cost (fewer runs = higher utility)
-    cost_factor = 1.0 - min(rec.n_runs_to_add / diagnostics.n_runs, 0.5)
-    
-    # Adjust for priority
-    priority_factor = 1.0 - (rec.priority - 1) * 0.1
-    
-    utility = base_score * cost_factor * priority_factor
-    
-    return max(0.0, min(100.0, utility))
+    return severity_scores.get(rec.issue.severity, 50.0)
 
 
 def _rank_plans(plans: List[AugmentationPlan]) -> List[AugmentationPlan]:
     """
-    Rank plans by utility score and assign rank numbers.
+    Rank plans by priority (already assigned during recommendation).
+    
+    Plans are already in priority order from _collect_and_prioritize_issues:
+    1. Aliasing (critical first, then warnings)
+    2. Estimability
+    3. Lack of fit
+    4. Precision
+    5. Pure error
+    6. Efficiency
+    
+    Parameters
+    ----------
+    plans : List[AugmentationPlan]
+        Unranked plans
     
     Returns
     -------
     List[AugmentationPlan]
-        Plans sorted by utility (highest first)
+        Plans in priority order with rank assigned
+    
+    Notes
+    -----
+    We don't re-sort by utility score because that would break the
+    carefully constructed priority order. The utility score is only
+    for display purposes (showing severity).
     """
     
-    # Sort by utility descending
-    plans.sort(key=lambda p: p.utility_score, reverse=True)
-    
-    # Assign ranks
+    # Plans are already in the correct priority order from issue collection
+    # Just assign sequential ranks
     for i, plan in enumerate(plans, 1):
         plan.rank = i
     

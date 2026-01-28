@@ -246,6 +246,9 @@ if st.session_state.get('design') is None:
         
         with st.spinner("Generating design..."):
             try:
+                # Initialize metadata dictionary
+                metadata = {}
+                
                 # Import appropriate design generator
                 if design_type == "Full Factorial":
                     from src.core.full_factorial import full_factorial
@@ -355,8 +358,8 @@ if st.session_state.get('design') is None:
                         }
                 
                 elif "D-Optimal" in design_type:
-                    from src.core.optimal_design import generate_d_optimal_design
-                    from src.core.optimal_design import LinearConstraint  # For constraints
+                    from src.core.optimal import generate_d_optimal_design
+                    from src.core.optimal import LinearConstraint  # For constraints
                     
                     model_type = st.session_state.get('model_type', 'linear')
                     n_runs = st.session_state.get('n_runs', 20)
@@ -438,15 +441,27 @@ if st.session_state.get('design') is None:
                 
                 # Handle design result (might be dict with 'design' key)
                 if isinstance(design, dict) and 'design' in design:
+                    # Get metadata (either local variable or from session state)
+                    current_metadata = metadata if metadata else st.session_state.get('design_metadata', {})
                     # Extract generators if present
                     if 'generators' in design:
-                        metadata['generators'] = design['generators']
+                        current_metadata['generators'] = design['generators']
                     design = design['design']
+                    # Update metadata
+                    if metadata:  # If we have local metadata, use it
+                        st.session_state['design_metadata'] = current_metadata
+                    else:  # Otherwise metadata was set directly to session_state already
+                        st.session_state['design_metadata'] = current_metadata
                 
-                # Save to session state
+                # Save design to session state (if not already done)
                 st.session_state['design'] = design
-                st.session_state['design_metadata'] = metadata
-                st.session_state['design_metadata']['design_type'] = design_type
+                
+                # Ensure metadata has design_type
+                if 'design_metadata' in st.session_state:
+                    st.session_state['design_metadata']['design_type'] = design_type
+                elif metadata:  # Full Factorial case where metadata is local
+                    metadata['design_type'] = design_type
+                    st.session_state['design_metadata'] = metadata
                 
                 st.success(f"✓ Design generated successfully! ({len(design)} runs)")
                 st.rerun()
@@ -489,16 +504,54 @@ else:
     with col4:
         # Compute D-efficiency if possible
         try:
-            from src.core.optimal_design import evaluate_design
+            from src.core.optimal.utils import compute_d_efficiency_vs_benchmark, compute_benchmark_criterion
+            from src.core.optimal.criteria import create_polynomial_builder
             from src.core.analysis import generate_model_terms
             
-            model_terms = metadata.get('model_terms')
-            if not model_terms:
-                model_terms = generate_model_terms(factors, 'linear', include_intercept=True)
+            # Determine model type from metadata or default to linear
+            model_type = metadata.get('model_type', 'linear')
+            if 'variant' in metadata:  # Response surface designs
+                model_type = 'quadratic'
+            elif metadata.get('resolution', 0) >= 5:  # Fractional factorial Res V+
+                model_type = 'interaction'
             
-            metrics = evaluate_design(design, factors, model_terms)
-            st.metric("D-Efficiency", f"{metrics['d_efficiency']:.1f}%")
-        except:
+            # Generate model builder
+            model_builder = create_polynomial_builder(factors, model_type)
+            
+            # Get design in coded space
+            factor_names = [f.name for f in factors]
+            if all(col in design.columns for col in factor_names):
+                from src.core.optimal.utils import code_point
+                import numpy as np
+                
+                # Code the design points
+                design_coded = np.array([
+                    code_point(design[factor_names].iloc[i].values, factors)
+                    for i in range(len(design))
+                ])
+                
+                # Build model matrix
+                X = model_builder(design_coded)
+                XtX = X.T @ X
+                
+                # Get benchmark
+                det_benchmark, _ = compute_benchmark_criterion(
+                    factors, model_type, model_builder, criterion_type='D'
+                )
+                
+                # Compute determinant and efficiency
+                det_design = np.linalg.det(XtX)
+                model_terms = generate_model_terms(factors, model_type, include_intercept=True)
+                n_params = len(model_terms)
+                
+                d_efficiency = compute_d_efficiency_vs_benchmark(
+                    det_design, len(design), n_params, det_benchmark
+                )
+                
+                st.metric("D-Efficiency", f"{d_efficiency:.1f}%")
+            else:
+                st.metric("D-Efficiency", "—")
+        except Exception as e:
             st.metric("D-Efficiency", "—")
     
     st.divider()

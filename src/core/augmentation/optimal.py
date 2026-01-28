@@ -169,7 +169,12 @@ def augment_for_model_extension(
 
     combined = pd.concat([original_with_phase, new_runs], ignore_index=True)
 
-    # Add standard order and run order
+    # Add standard order and run order (remove if they already exist)
+    if "StdOrder" in combined.columns:
+        combined = combined.drop(columns=["StdOrder"])
+    if "RunOrder" in combined.columns:
+        combined = combined.drop(columns=["RunOrder"])
+    
     combined.insert(0, "StdOrder", range(1, len(combined) + 1))
     combined.insert(1, "RunOrder", range(1, len(combined) + 1))
 
