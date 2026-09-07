@@ -229,7 +229,7 @@ class TestDesirabilityFunctions:
         # At upper bound
         assert desirability_maximize(20, 10, 20) == 1.0
         
-        # Above range
+        # Above range (saturates at d=1 — standard Derringer-Suich)
         assert desirability_maximize(25, 10, 20) == 1.0
     
     def test_desirability_maximize_weight(self):
@@ -244,8 +244,8 @@ class TestDesirabilityFunctions:
     
     def test_desirability_minimize_basic(self):
         """Test minimize desirability."""
-        assert desirability_minimize(5, 10, 20) == 1.0   # Below range
-        assert desirability_minimize(10, 10, 20) == 1.0  # At target
+        assert desirability_minimize(5, 10, 20) == 1.0   # Below range (saturates at d=1)
+        assert desirability_minimize(10, 10, 20) == 1.0  # At ideal
         assert desirability_minimize(15, 10, 20) == pytest.approx(0.5)
         assert desirability_minimize(20, 10, 20) == 0.0  # At max
         assert desirability_minimize(25, 10, 20) == 0.0  # Above range
