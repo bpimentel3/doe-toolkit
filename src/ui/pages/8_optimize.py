@@ -130,8 +130,9 @@ if optimization_mode == 'single':
     st.markdown("**Factor Constraints**")
 
     factor_constraints = {}
+    pinned_levels = {}
     for factor in factors:
-        if factor.is_continuous():
+        if factor.is_continuous() or factor.is_discrete_numeric():
             col1, col2 = st.columns(2)
 
             with col1:
@@ -149,6 +150,19 @@ if optimization_mode == 'single':
                 )
 
             factor_constraints[factor.name] = (min_val, max_val)
+
+        elif factor.is_categorical():
+            # The optimizer can pick the best level (default), or the user can
+            # pin the level by selecting one explicitly.
+            level_choice = st.selectbox(
+                f"{factor.name} level",
+                ["(Optimize — choose best level)"] + list(factor.levels),
+                key=f'cat_{factor.name}',
+                help="Leave as '(Optimize)' to let the optimizer select the "
+                     "level that maximizes/minimizes the response."
+            )
+            if level_choice != "(Optimize — choose best level)":
+                pinned_levels[factor.name] = level_choice
 
     # Optimize button
     if st.button("🔍 Find Optimal Settings", type="primary", width='stretch'):
@@ -169,6 +183,7 @@ if optimization_mode == 'single':
                     bounds=factor_constraints if factor_constraints else None,
                     seed=42,
                     model_is_coded=_model_is_coded,
+                    pinned_levels=pinned_levels if pinned_levels else None,
                 )
 
                 if opt_result.success:
@@ -230,7 +245,9 @@ if optimization_mode == 'single':
                     st.subheader("Optimal Factor Settings")
                     for fname, value in opt_result.optimal_settings.items():
                         factor = next(f for f in factors if f.name == fname)
-                        if factor.units:
+                        if factor.is_categorical():
+                            st.metric(fname, str(value))
+                        elif factor.units:
                             st.metric(fname, f"{value:.3f} {factor.units}")
                         else:
                             st.metric(fname, f"{value:.3f}")
@@ -344,10 +361,11 @@ elif optimization_mode == 'desirability':
         st.divider()
 
         # --- Factor bounds ---
+        pinned_levels_d: Dict[str, object] = {}
         with st.expander("🔧 Factor Bounds (optional)"):
             factor_bounds_d: Dict[str, tuple] = {}
             for factor in factors:
-                if factor.is_continuous():
+                if factor.is_continuous() or factor.is_discrete_numeric():
                     bc1, bc2 = st.columns(2)
                     with bc1:
                         bmin = st.number_input(
@@ -362,6 +380,17 @@ elif optimization_mode == 'desirability':
                             key=f'dmax_{factor.name}'
                         )
                     factor_bounds_d[factor.name] = (bmin, bmax)
+
+                elif factor.is_categorical():
+                    level_choice = st.selectbox(
+                        f"{factor.name} level",
+                        ["(Optimize — choose best level)"] + list(factor.levels),
+                        key=f'dcat_{factor.name}',
+                        help="Leave as '(Optimize)' to let the optimizer select "
+                             "the best level across all responses."
+                    )
+                    if level_choice != "(Optimize — choose best level)":
+                        pinned_levels_d[factor.name] = level_choice
 
         # --- Validate config before allowing run ---
         config_errors: List[str] = []
@@ -422,6 +451,7 @@ elif optimization_mode == 'desirability':
                         bounds=factor_bounds_d if factor_bounds_d else None,
                         seed=42,
                         model_is_coded=_model_is_coded,
+                        pinned_levels=pinned_levels_d if pinned_levels_d else None,
                     )
 
                     # Store result for profile tab
@@ -443,9 +473,14 @@ elif optimization_mode == 'desirability':
                         val = d_result.optimal_settings.get(factor.name)
                         if val is not None:
                             label = f"{factor.name} ({factor.units})" if factor.units else factor.name
-                            settings_cols[idx % len(settings_cols)].metric(
-                                label, f"{val:.3f}"
-                            )
+                            if factor.is_categorical():
+                                settings_cols[idx % len(settings_cols)].metric(
+                                    label, str(val)
+                                )
+                            else:
+                                settings_cols[idx % len(settings_cols)].metric(
+                                    label, f"{val:.3f}"
+                                )
 
                     st.divider()
 
@@ -465,7 +500,7 @@ elif optimization_mode == 'desirability':
                         })
 
                     results_df = pd.DataFrame(results_rows)
-                    st.dataframe(results_df, hide_index=True, use_container_width=True)
+                    st.dataframe(results_df, hide_index=True, width="stretch")
 
                     # Overall desirability — prominent display
                     st.metric(
@@ -524,7 +559,7 @@ elif optimization_mode == 'desirability':
                 annotation_text=f"Overall D = {d_result.overall_desirability:.3f}",
                 annotation_position='top right'
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, width="stretch")
 
             # Desirability summary table
             st.subheader("Summary at Optimal Settings")
@@ -543,7 +578,7 @@ elif optimization_mode == 'desirability':
             st.dataframe(
                 pd.DataFrame(summary_rows),
                 hide_index=True,
-                use_container_width=True
+                width="stretch"
             )
 
             st.metric(

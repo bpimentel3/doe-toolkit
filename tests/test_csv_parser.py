@@ -13,6 +13,7 @@ from src.ui.utils.csv_parser import (
     extract_factor_definitions,
     extract_response_definitions,
     extract_design_data,
+    extract_model_terms,
     validate_csv_structure,
     generate_doe_csv,
     CSVParseError,
@@ -215,6 +216,45 @@ class TestResponseExtraction:
         assert len(responses) == 1
         assert responses[0]["name"] == "Yield"
         assert responses[0]["units"] is None
+
+
+class TestModelTermsExtraction:
+    """Tests for extracting model terms from the CSV header."""
+
+    def test_extract_design_model_terms(self) -> None:
+        """Test parsing pipe-delimited model terms row."""
+        lines = [
+            "# MODEL TERMS",
+            "# Response,Terms",
+            "# __design__,1|Load|Flow|Speed|Mud",
+        ]
+        model_terms = extract_model_terms(lines)
+
+        assert model_terms == {
+            "__design__": ["1", "Load", "Flow", "Speed", "Mud"]
+        }
+
+    def test_strips_excel_column_padding_trailing_commas(self) -> None:
+        """Excel re-saves pad metadata lines with trailing commas. They must not
+        leak into the last pipe-delimited term (regression for the
+        'Mud,,,,,' factor-not-found crash)."""
+        lines = [
+            "# MODEL TERMS,,,,,,",
+            "# Response,Terms,,,,,",
+            "# __design__,1|Load|Flow|Speed|Mud,,,,,",
+        ]
+        model_terms = extract_model_terms(lines)
+
+        assert model_terms["__design__"] == ["1", "Load", "Flow", "Speed", "Mud"]
+
+    def test_missing_model_terms_section_returns_empty(self) -> None:
+        """Test that absent MODEL TERMS section yields an empty dict."""
+        lines = [
+            "# DOE-TOOLKIT DESIGN",
+            "# DESIGN DATA",
+            "1,2,3",
+        ]
+        assert extract_model_terms(lines) == {}
 
 
 class TestDesignDataExtraction:

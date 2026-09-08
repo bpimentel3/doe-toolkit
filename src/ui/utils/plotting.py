@@ -18,6 +18,8 @@ import plotly.graph_objects as go
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 
+from src.core.analysis_base import attach_critical_limits
+
 # ==================== PLOT STYLING ====================
 
 PLOT_COLORS: Dict[str, str] = {
@@ -33,6 +35,21 @@ PLOT_COLORS: Dict[str, str] = {
     "sigma2": "#FFD700",  # Gold for 2σ
     "sigma3": "#FF6347",  # Tomato red for 3σ
 }
+
+# Qualitative palette for categorical factor levels (one colour per line).
+# Mirrors the Plotly default 10-colour cycle so it stays consistent with the
+# rest of PLOT_COLORS.
+QUALITATIVE_COLORS: List[str] = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+]
+
+# Sequential palette for numeric factor levels, mapped by rank so the
+# gradient order always matches the numeric ordering of the levels.
+SEQUENTIAL_COLORS: List[str] = [
+    "#1f77b4", "#3182bd", "#6baed6", "#9ecae1",
+    "#fd8d3c", "#e6550d", "#d62728",
+]
 
 
 def apply_plot_style(fig: go.Figure) -> go.Figure:
@@ -476,6 +493,280 @@ def create_logworth_plot(
         margin=dict(l=150, r=100),
     )
 
+    return apply_plot_style(fig)
+
+
+def _pformat(p: float) -> str:
+    """Format a p-value for hover text."""
+    if not np.isfinite(p):
+        return "n/a"
+    if p >= 0.0001:
+        return f"{p:.4f}"
+    return f"{p:.3g}"
+
+
+def _effect_plot_height(n_terms: int) -> int:
+    """Adaptive height proportional to the number of displayed terms."""
+    return max(280, n_terms * 26)
+
+
+def create_coefficient_significance_plot(
+    coefficient_significance_df: Optional[pd.DataFrame],
+    alpha: float = 0.05,
+    show_block: bool = True,
+) -> go.Figure:
+    """
+    Coefficient-level LogWorth Pareto (kept as-is from fitted-model tests).
+
+    Bars show ``-log10(coefficient p-value)`` for each fitted coefficient.
+    Intercept is excluded.  Block/design terms are styled distinctly and can
+    be filtered at display time only (no refit).  Significant rows are
+    colored; insignificant rows are desaturated so the α line reads clearly.
+
+    Parameters
+    ----------
+    coefficient_significance_df : Optional[pd.DataFrame]
+        Canonical coefficient_significance table.
+    alpha : float
+        Significance level; reference line at ``-log10(alpha)``.
+    show_block : bool
+        Whether to display block/design terms.
+
+    Returns
+    -------
+    go.Figure
+    """
+    if coefficient_significance_df is None or coefficient_significance_df.empty:
+        return _empty_effects_figure("Coefficient Significance (LogWorth)")
+    df = coefficient_significance_df.copy()
+    if not show_block:
+        df = df.loc[~df["is_block"].fillna(False)].copy()
+    if df.empty:
+        return _empty_effects_figure("Coefficient Significance (LogWorth)", hidden=True)
+
+    df["_is_block"] = df["is_block"].fillna(False).astype(bool)
+    df = df.sort_values("logworth", ascending=True)
+
+    colors = [
+        PLOT_COLORS["secondary"] if blk else PLOT_COLORS["primary"]
+        for blk in df["_is_block"]
+    ]
+    p_text = [_pformat(p) for p in df["p_value"]]
+    hover = [
+        (
+            f"<b>{name}</b><br>"
+            f"Parent ANOVA term: {parent or '—-'}"
+            f"{f' (DF={int(parent_df)})' if pd.notna(parent_df) else ''}<br>"
+            f"estimate={est:.4g} &nbsp;SE={se:.4g} &nbsp;t={t:.3f}<br>"
+            f"coefficient p={_pformat(p)} &nbsp;LogWorth={lw:.2f}<br>"
+            f"{'<b>Block/design term</b><br>' if blk else ''}"
+            f"Source: {src}"
+        )
+        for name, parent, parent_df, est, se, t, p, lw, blk, src in zip(
+            df["coefficient_name"],
+            df["parent_anova_term"],
+            df["parent_anova_df"],
+            df["coefficient_estimate"],
+            df["standard_error"],
+            df["t_value"],
+            df["p_value"],
+            df["logworth"],
+            df["_is_block"],
+            df["source"],
+        )
+    ]
+
+    fig = go.Figure()
+
+    colormap = dict(zip(df.index, colors))
+    cmap_p = dict(zip(df.index, p_text))
+    cmap_h = dict(zip(df.index, hover))
+
+    def _add_bars(sub, pattern):
+        if sub.empty:
+            return
+        fig.add_trace(
+            go.Bar(
+                x=sub["logworth"],
+                y=sub["coefficient_name"],
+                orientation="h",
+                marker=dict(
+                    color=[colormap[i] for i in sub.index],
+                    line=dict(color="#000000", width=0.5),
+                    pattern=dict(shape=pattern) if pattern else None,
+                ),
+                text=[cmap_p[i] for i in sub.index],
+                textposition="outside",
+                textfont=dict(size=10),
+                customdata=[cmap_h[i] for i in sub.index],
+                hovertemplate="%{customdata}<extra></extra>",
+            )
+        )
+
+    _add_bars(df.loc[~df["_is_block"]], pattern="")
+    _add_bars(df.loc[df["_is_block"]], pattern="/")
+
+    threshold = -np.log10(alpha)
+    fig.add_vline(
+        x=threshold,
+        line=dict(color=PLOT_COLORS["danger"], dash="dash", width=2),
+        annotation=dict(
+            text=f"α={alpha}", textangle=0, yref="paper", y=0.95, font=dict(size=10)
+        ),
+    )
+    fig.update_layout(
+        title=dict(
+            text="Coefficient Significance (LogWorth)",
+            font=dict(size=15),
+        ),
+        xaxis_title="LogWorth (-log₁₀ of fitted-model coefficient p)",
+        yaxis_title="",
+        height=_effect_plot_height(len(df)),
+        showlegend=False,
+        margin=dict(l=190, r=110),
+    )
+    fig.update_yaxes(automargin=True, tickfont=dict(size=11))
+    return apply_plot_style(fig)
+
+
+def create_standardized_effects_plot(
+    anova_effect_summary_df: Optional[pd.DataFrame],
+    alpha: float = 0.05,
+    show_block: bool = True,
+) -> go.Figure:
+    """
+    DOE Pareto of Standardized Effects, sourced from the ANOVA table.
+
+    One-Df terms use ``|t| = sqrt(F)`` (signed by the coefficient estimate).
+    Multi-Df terms (e.g. categorical main effects) use an omnibus
+    ``sqrt(F)`` score and are shown in a neutral color; they are not
+    presented as one-Df effects.  Critical limits (t and Bonferroni) are
+    drawn only when every displayed term shares a single residual DF.
+    """
+    if anova_effect_summary_df is None or anova_effect_summary_df.empty:
+        return _empty_effects_figure("DOE Pareto of Standardized Effects")
+    df = anova_effect_summary_df.copy()
+    if not show_block:
+        df = df.loc[~df["is_block"].fillna(False)].copy()
+    if df.empty:
+        return _empty_effects_figure(
+            "DOE Pareto of Standardized Effects", hidden=True
+        )
+
+    df["_is_block"] = df["is_block"].fillna(False).astype(bool)
+    df["_abs"] = df["standardized_statistic"].astype(float).abs()
+    df = df.loc[df["_abs"].notna()].sort_values("_abs", ascending=True)
+
+    colors = []
+    for _, row in df.iterrows():
+        if row["_is_block"] or row["standardized_statistic_type"] == "omnibus sqrt(F)":
+            colors.append(PLOT_COLORS["neutral"])
+        elif float(row["standardized_statistic"]) < 0:
+            colors.append(PLOT_COLORS["danger"])
+        else:
+            colors.append(PLOT_COLORS["primary"])
+
+    labels = [
+        (
+            f"<b>{term}</b>{' <i>(block)</i>' if blk else ''}<br>"
+            f"{stat_type} = {stat:.3f}<br>"
+            f"DF={int(dof) if pd.notna(dof) else '?'} &nbsp;"
+            f"F={fstat:.3f} &nbsp;p={_pformat(p)}<br>"
+            f"residual DF={int(rd) if pd.notna(rd) else '?'}<br>"
+            f"{'t-critical=%.3f  Bonferroni=%.3f' % (tc, bc) if pd.notna(tc) else ''}<br>"
+            f"<i>{'Multi-Df term: shown as omnibus sqrt(F), not a one-Df t' if dof is not None and dof > 1 else ''}</i>"
+            f"effect estimate={est:.4g} &nbsp;sign={'+' if sgn > 0 else ('-' if sgn < 0 else '0')}<br>"
+            f"Source: {src}"
+        )
+        for term, blk, stat_type, stat, dof, fstat, p, rd, tc, bc, est, sgn, src in zip(
+            df["term"],
+            df["_is_block"],
+            df["standardized_statistic_type"],
+            df["standardized_statistic"],
+            df["df"],
+            df["F"],
+            df["p_value"],
+            df["residual_df"],
+            df["t_critical"],
+            df["bonferroni_limit"],
+            df["effect_estimate"],
+            df["effect_sign"],
+            df["source"],
+        )
+    ]
+    # Short single-line axis labels; the verbose block lives in hover only.
+    ylabels = [
+        f"{term}{' (block)' if blk else ''}"
+        for term, blk in zip(df["term"], df["_is_block"])
+    ]
+
+    fig = go.Figure()
+
+    colormap = dict(zip(df.index, colors))
+    cmap_l = dict(zip(df.index, labels))
+    cmap_y = dict(zip(df.index, ylabels))
+
+    def _add_std_bars(sub, pattern):
+        if sub.empty:
+            return
+        fig.add_trace(
+            go.Bar(
+                x=sub["_abs"],
+                y=[cmap_y[i] for i in sub.index],
+                orientation="h",
+                marker=dict(
+                    color=[colormap[i] for i in sub.index],
+                    line=dict(color="#000000", width=0.5),
+                    pattern=dict(shape=pattern) if pattern else None,
+                ),
+                text=[f"{s:.2f}".replace("+", "") for s in sub["standardized_statistic"]],
+                textposition="outside",
+                textfont=dict(size=10),
+                customdata=[cmap_l[i] for i in sub.index],
+                hovertemplate="%{customdata}<extra></extra>",
+            )
+        )
+
+    _add_std_bars(df.loc[~df["_is_block"]], pattern="")
+    _add_std_bars(df.loc[df["_is_block"]], pattern="/")
+
+    # Critical limits: only when every displayed term shares one residual DF.
+    residuals = df["residual_df"].dropna().unique()
+    if len(residuals) == 1 and np.isfinite(residuals[0]):
+        tc, bc = df["t_critical"].iloc[0], df["bonferroni_limit"].iloc[0]
+        if np.isfinite(tc):
+            fig.add_vline(x=tc, line=dict(color=PLOT_COLORS["danger"], dash="dash"))
+        if np.isfinite(bc):
+            fig.add_vline(x=bc, line=dict(color=PLOT_COLORS["sigma2"], dash="dot"))
+    else:
+        fig.add_annotation(
+            text="No universal t/Bonferroni limit: residual DF vary across strata",
+            xref="paper", yref="paper", x=1.0, y=-0.12, showarrow=False,
+            font=dict(size=9, color=PLOT_COLORS["neutral"]),
+            xanchor="right",
+        )
+
+    fig.update_layout(
+        title=dict(text="DOE Pareto of Standardized Effects", font=dict(size=15)),
+        xaxis_title="Standardized ANOVA Statistic (|t| = sqrt(F) for one-Df terms)",
+        yaxis_title="",
+        height=_effect_plot_height(len(df)),
+        showlegend=False,
+        margin=dict(l=190, r=130),
+    )
+    fig.update_yaxes(automargin=True, tickfont=dict(size=11))
+    return apply_plot_style(fig)
+
+
+def _empty_effects_figure(title: str, hidden: bool = False) -> go.Figure:
+    fig = go.Figure()
+    fig.add_annotation(
+        text="No effects available"
+        if not hidden
+        else "No effects to show (block/design terms hidden)",
+        xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+    )
+    fig.update_layout(title=dict(text=title, font=dict(size=15)), height=280)
     return apply_plot_style(fig)
 
 
@@ -1162,5 +1453,296 @@ def create_3d_surface_plot(
         ),
         height=600,
     )
+
+    return apply_plot_style(fig)
+
+def interaction_stats(
+    f1_name: str,
+    f2_name: str,
+    design: pd.DataFrame,
+    response: np.ndarray,
+) -> pd.DataFrame:
+    """
+    Aggregate per-combination response statistics for an interaction plot.
+
+    For every observed combination of factor ``f1`` x ``f2`` this returns one
+    row with the mean response, sample standard deviation, replicate count,
+    standard error of the mean, and a 95% confidence interval for the mean.
+
+    Combinations with a missing (NaN) response are dropped; a combination with
+    a single replicate yields ``std = sem = 0`` and a CI collapsed to the mean.
+
+    Parameters
+    ----------
+    f1_name : str
+        Name of the x-axis factor column.
+    f2_name : str
+        Name of the line-encoding factor column.
+    design : pd.DataFrame
+        Design data (natural units) containing at least ``f1_name`` and
+        ``f2_name``.
+    response : np.ndarray
+        Response values aligned with ``design`` rows.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ``[f1_name, f2_name, mean, std, n, sem, ci_lower, ci_upper]``.
+
+    Examples
+    --------
+    >>> stats = interaction_stats('A', 'B', design, response)
+    """
+    df = pd.DataFrame({
+        f1_name: np.asarray(design[f1_name].values),
+        f2_name: np.asarray(design[f2_name].values),
+        'response': np.asarray(response, dtype=float),
+    })
+    # Missing responses are excluded from the means.
+    df = df.dropna(subset=['response'])
+
+    grouped = df.groupby([f1_name, f2_name], sort=False)['response']
+    mean = grouped.mean().rename('mean').reset_index()
+    counts = grouped.size().rename('n').reset_index()
+    std = grouped.std(ddof=1).rename('std').reset_index()
+    sem = grouped.sem().rename('sem').reset_index()
+
+    result = mean.merge(counts, on=[f1_name, f2_name])
+    result = result.merge(std, on=[f1_name, f2_name])
+    result = result.merge(sem, on=[f1_name, f2_name])
+
+    result['mean'] = result['mean'].astype(float)
+    result['std'] = result['std'].fillna(0.0)
+    result['sem'] = result['sem'].fillna(0.0)
+    result['n'] = result['n'].astype(int)
+
+    # 95% CI for the mean using a t-distribution; with a single replicate
+    # there is no spread so the interval collapses onto the mean.
+    tcrit = np.where(
+        result['n'] > 1,
+        stats.t.ppf(0.975, df=np.clip(result['n'] - 1, 1, None)),
+        0.0,
+    )
+    result['ci_lower'] = result['mean'] - tcrit * result['sem']
+    result['ci_upper'] = result['mean'] + tcrit * result['sem']
+
+    return result
+
+
+def _sorted_levels(values, is_categorical: bool):
+    """Return the ordered set of level strings for a factor column.
+
+    Categorical levels are sorted lexicographically to give a stable order;
+    numeric levels are sorted numerically so the axis/colour gradient follows
+    the actual values, not their string representation.  Returns the original
+    string representations (not floats) so downstream ``str(level)`` joins
+    match the stringified stats DataFrame exactly.
+    """
+    unique = list(dict.fromkeys(str(v) for v in values))
+    if is_categorical:
+        return sorted(unique)
+    pairs = []
+    for s in unique:
+        try:
+            pairs.append((float(s), s))
+        except (TypeError, ValueError):
+            pairs.append((float('inf'), s))
+    pairs.sort(key=lambda p: (np.isnan(p[0]), p[0]))
+    return [p[1] for p in pairs]
+
+
+def create_interaction_plot(
+    stats: pd.DataFrame,
+    f1_name: str,
+    f2_name: str,
+    f1_is_categorical: bool,
+    f2_is_categorical: bool,
+    response_name: str,
+    response_units: Optional[str] = None,
+    f1_units: Optional[str] = None,
+    f2_units: Optional[str] = None,
+    error_mode: str = "none",
+    p_value: Optional[float] = None,
+    interaction_present: bool = True,
+) -> go.Figure:
+    """
+    Create an interaction plot (Stat-Ease / Design-Expert style).
+
+    One line is drawn for each level of ``f2`` spanning the levels of ``f1``
+    on the x-axis.  Parallel lines indicate little interaction while
+    crossing / non-parallel lines indicate an interaction.
+
+    Parameters
+    ----------
+    stats : pd.DataFrame
+        Output of :func:`interaction_stats`.
+    f1_name : str
+        Name of the x-axis factor.
+    f2_name : str
+        Name of the line-encoding (grouping) factor.
+    f1_is_categorical / f2_is_categorical : bool
+        Whether each factor is categorical (affects axis type, colouring and
+        level ordering).  Categorical levels are never coerced to numbers.
+    response_name : str
+        Display name of the response for the y-axis/tooltip.
+    response_units / f1_units / f2_units : str, optional
+        Units appended to axis labels.
+    error_mode : str
+        One of ``"none"`` (mean only), ``"sd"`` (mean +/- SD), ``"ci"``
+        (mean +/- 95% CI).  Error bars are omitted for single-replicate
+        combinations.
+    p_value : float, optional
+        Interaction term p-value from the fitted ANOVA, if available.
+    interaction_present : bool
+        Whether the ``f1:f2`` interaction term is present in the fitted model.
+        When ``False`` the significance subtitle reports "not in model".
+
+    Returns
+    -------
+    go.Figure
+        The interaction plot.
+
+    Examples
+    --------
+    >>> stats = interaction_stats('A', 'B', design, response)
+    >>> fig = create_interaction_plot(stats, 'A', 'B', True, False, 'Yield')
+    """
+    # Ordered level lists, matching the order used for grouping/colouring.
+    f1_levels = _sorted_levels(stats[f1_name].values, f1_is_categorical)
+    f2_levels = _sorted_levels(stats[f2_name].values, f2_is_categorical)
+
+    stats = stats.copy()
+    stats[f1_name] = stats[f1_name].map(lambda v: str(v))
+    stats[f2_name] = stats[f2_name].map(lambda v: str(v))
+
+    # Colour assignment per grouping level.
+    if f2_is_categorical:
+        line_colors = {
+            str(level): QUALITATIVE_COLORS[i % len(QUALITATIVE_COLORS)]
+            for i, level in enumerate(f2_levels)
+        }
+    else:
+        line_colors = {}
+        n = max(len(f2_levels), 1)
+        for i, level in enumerate(f2_levels):
+            color = SEQUENTIAL_COLORS[
+                int(round(i * (len(SEQUENTIAL_COLORS) - 1) / (n - 1)))
+            ] if n > 1 else SEQUENTIAL_COLORS[0]
+            line_colors[str(level)] = color
+
+    # X-axis: category axis for categorical factor, linear for numeric.
+    x_is_categorical = f1_is_categorical
+    x_values = list(f1_levels)
+    if x_is_categorical:
+        x_values = [str(v) for v in x_values]
+    else:
+        x_values = [float(v) for v in x_values]
+
+    f1_label = _label_with_units(f1_name, f1_units)
+    f2_label = _label_with_units(f2_name, f2_units)
+    response_label = _label_with_units(response_name, response_units)
+
+    fig = go.Figure()
+
+    for level in f2_levels:
+        lvl_str = str(level)
+        subset = stats[stats[f2_name] == lvl_str]
+        # Align with the x-level order (fill missing combos with None).
+        y = []
+        sd_vals = []
+        n_vals = []
+        for x_lvl in f1_levels:
+            row = subset[subset[f1_name] == str(x_lvl)]
+            if row.empty:
+                y.append(None)
+                sd_vals.append(None)
+                n_vals.append(None)
+                continue
+            r = row.iloc[0]
+            y.append(None if pd.isna(r['mean']) else float(r['mean']))
+            sd_vals.append(
+                None if pd.isna(r['std']) else float(r['std'])
+            )
+            n_vals.append(int(r['n']))
+
+        error_y = None
+        if error_mode in ("sd", "ci") and len(f2_levels) > 0:
+            arrays = []
+            for idx, x_lvl in enumerate(f1_levels):
+                row = subset[subset[f1_name] == str(x_lvl)]
+                if row.empty or int(row.iloc[0]['n']) < 2:
+                    arrays.append(0.0)
+                elif error_mode == "sd":
+                    arrays.append(float(row.iloc[0]['std']))
+                else:
+                    arrays.append(float(
+                        row.iloc[0]['ci_upper'] - row.iloc[0]['mean']
+                    ))
+            error_y = dict(
+                type="data",
+                symmetric=True,
+                array=arrays,
+                thickness=1,
+                width=4,
+            )
+
+        # customdata carries (level, SD, n) so the tooltip can show them.
+        customdata = [
+            [lvl_str, sd_vals[i], n_vals[i]]
+            for i in range(len(f1_levels))
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=x_values,
+                y=y,
+                mode="lines+markers",
+                name=lvl_str,
+                line=dict(color=line_colors[lvl_str], width=2.5),
+                marker=dict(size=8, line=dict(width=1, color="white")),
+                error_y=error_y,
+                customdata=customdata,
+                hovertemplate=(
+                    f"{f1_name}: %{{x}}<br>"
+                    f"{f2_name}: %{{customdata[0]}}<br>"
+                    f"{response_name}: %{{y:.3f}}<br>"
+                    f"SD: %{{customdata[1]}}<br>"
+                    f"n: %{{customdata[2]}}<extra></extra>"
+                ),
+            )
+        )
+
+    # Interaction significance subtitle.
+    subtitle = None
+    if interaction_present and p_value is not None:
+        if p_value < 0.05:
+            verdict = "Significant interaction"
+        elif p_value < 0.10:
+            verdict = "Marginal interaction"
+        else:
+            verdict = "No significant interaction"
+        subtitle = f"{verdict} (interaction p-value = {p_value:g})"
+    elif not interaction_present:
+        subtitle = "Interaction not in model (N/A)"
+    else:
+        subtitle = None
+
+    layout_kwargs: Dict[str, object] = dict(
+        title=dict(
+            text=f"{response_label}  |  {f1_name} × {f2_name}",
+            font=dict(size=14),
+        ),
+        xaxis_title=f1_label,
+        yaxis_title=response_label,
+        xaxis_type="category" if x_is_categorical else "linear",
+        showlegend=True,
+        height=480,
+        legend=dict(title=dict(text=f2_label)),
+        hovermode="closest",
+    )
+    if subtitle:
+        layout_kwargs["title"]["subtitle"] = dict(text=subtitle)
+
+    fig.update_layout(**layout_kwargs)
+    fig.update_traces(connectgaps=False)
 
     return apply_plot_style(fig)

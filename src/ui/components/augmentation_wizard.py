@@ -158,7 +158,7 @@ def display_type_selection(
                         "Select",
                         key=f"select_type_{entry['type']}",
                         type="primary",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         selected_type = entry['type']
                 else:
@@ -166,7 +166,7 @@ def display_type_selection(
                         "Locked",
                         key=f"locked_type_{entry['type']}",
                         disabled=True,
-                        use_container_width=True,
+                        width="stretch",
                         help=lock_reason or "Not available for this design.",
                     )
 

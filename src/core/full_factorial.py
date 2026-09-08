@@ -17,6 +17,7 @@ from src.core.coding import decode_design as _decode_design
 def full_factorial(
     factors: List[Factor],
     n_center_points: int = 0,
+    n_replicates: int = 1,
     randomize: bool = True,
     random_seed: Optional[int] = None,
     n_blocks: Optional[int] = None
@@ -26,7 +27,7 @@ def full_factorial(
     
     A full factorial design includes all possible combinations of factor levels.
     For k factors with levels L₁, L₂, ..., Lₖ, the total number of runs is
-    L₁ × L₂ × ... × Lₖ.
+    L₁ × L₂ × ... × Lₖ, multiplied by the number of replicates.
     
     Parameters
     ----------
@@ -34,6 +35,8 @@ def full_factorial(
         List of factors to include in the design
     n_center_points : int, optional
         Number of center point runs to add (only for continuous factors), default 0
+    n_replicates : int, optional
+        Number of full replicates of the design, default 1
     randomize : bool, optional
         Whether to randomize run order, default True
     random_seed : int, optional
@@ -45,7 +48,7 @@ def full_factorial(
     -------
     pd.DataFrame
         Design matrix with columns for each factor, plus 'StdOrder', 'RunOrder',
-        and 'Block' (if n_blocks specified)
+        'Replicate' (if n_replicates > 1), and 'Block' (if n_blocks specified)
     
     Notes
     -----
@@ -55,6 +58,10 @@ def full_factorial(
     
     Center points (coded as 0) are added for continuous factors only. They provide
     an independent estimate of pure error and allow testing for curvature.
+    
+    Replicates repeat the entire base design (factorial points + center points)
+    the specified number of times. A 'Replicate' column is added to distinguish
+    runs from different replicates.
     
     Examples
     --------
@@ -88,17 +95,30 @@ def full_factorial(
     if not factors:
         raise ValueError("At least one factor must be provided")
     
+    if n_replicates < 1:
+        raise ValueError("Number of replicates must be at least 1")
+    
     # Set random seed if provided
     if random_seed is not None:
         np.random.seed(random_seed)
     
-    # Generate factorial points
-    design_matrix = _generate_factorial_points(factors)
+    # Generate base design: factorial points + center points
+    base_design = _generate_factorial_points(factors)
     
-    # Add center points if requested
     if n_center_points > 0:
         center_points = _generate_center_points(factors, n_center_points)
-        design_matrix = pd.concat([design_matrix, center_points], ignore_index=True)
+        base_design = pd.concat([base_design, center_points], ignore_index=True)
+    
+    # Replicate the base design
+    if n_replicates > 1:
+        replicated_parts = []
+        for rep in range(1, n_replicates + 1):
+            rep_copy = base_design.copy()
+            rep_copy['Replicate'] = rep
+            replicated_parts.append(rep_copy)
+        design_matrix = pd.concat(replicated_parts, ignore_index=True)
+    else:
+        design_matrix = base_design.copy()
     
     # Add standard order (before randomization)
     design_matrix.insert(0, 'StdOrder', range(1, len(design_matrix) + 1))

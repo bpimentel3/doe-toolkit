@@ -15,6 +15,10 @@ from src.ui.utils.csv_parser import (
     CSVParseError,
 )
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
+from src.ui.utils.response_definitions import (
+    validate_response_name,
+    response_rows_to_definitions,
+)
 
 
 @pytest.fixture
@@ -458,3 +462,69 @@ class TestEdgeCases:
         
         assert len(result.design_data) == 100
         assert result.is_valid
+
+
+class TestResponseDefinitions:
+    """Response-name sanitization and deduplication (mirrors the factors grid)."""
+
+    def _df(self, rows):
+        return pd.DataFrame(rows, columns=['Name', 'Units'])
+
+    def test_free_form_name_is_sanitized(self):
+        defs, errors, warnings = response_rows_to_definitions(
+            self._df([['Day 0 Max Force (g)', 'g']])
+        )
+        assert errors == []
+        assert len(warnings) == 1
+        assert warnings[0]['sanitized'] == 'Day_0_Max_Force_g'
+        assert defs == [{'name': 'Day_0_Max_Force_g', 'units': 'g'}]
+
+    def test_valid_name_passthrough_without_warning(self):
+        defs, errors, warnings = response_rows_to_definitions(
+            self._df([['Yield', '%'], ['Purity', 'mg/mL']])
+        )
+        assert errors == []
+        assert warnings == []
+        assert defs[0] == {'name': 'Yield', 'units': '%'}
+        assert defs[1] == {'name': 'Purity', 'units': 'mg/mL'}
+
+    def test_empty_units_become_none(self):
+        defs, errors, _ = response_rows_to_definitions(
+            self._df([['Yield', '']])
+        )
+        assert errors == []
+        assert defs == [{'name': 'Yield', 'units': None}]
+
+    def test_blank_rows_are_skipped(self):
+        defs, errors, _ = response_rows_to_definitions(
+            self._df([['', ''], ['Yield', '%'], [None, None]])
+        )
+        assert errors == []
+        assert defs == [{'name': 'Yield', 'units': '%'}]
+
+    def test_sanitized_duplicate_is_rejected(self):
+        # 'Max-Force' and 'Max Force' both sanitize to 'Max_Force'.
+        defs, errors, warnings = response_rows_to_definitions(
+            self._df([['Max-Force', ''], ['Max Force', '']])
+        )
+        assert defs == [{'name': 'Max_Force', 'units': None}]
+        assert len(errors) == 1
+        assert 'already exists' in errors[0]
+        assert len(warnings) == 2
+
+    def test_reserved_name_is_auto_cleaned(self):
+        # 'I' is Patsy-reserved and gets prefixed to 'f_I' during sanitization,
+        # so it is accepted with a warning rather than rejected.
+        defs, errors, warnings = response_rows_to_definitions(
+            self._df([['I', '']])
+        )
+        assert errors == []
+        assert defs == [{'name': 'f_I', 'units': None}]
+        assert len(warnings) == 1
+
+    def test_validate_response_name_checks_rules(self):
+        assert validate_response_name('Yield', [])
+        assert not validate_response_name('Yield', [{'name': 'yield'}])  # case-insensitive
+        assert not validate_response_name('I', [])
+        assert not validate_response_name('bad name', [])
+        assert not validate_response_name('2nd', [])

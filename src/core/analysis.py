@@ -13,6 +13,7 @@ quadratic) live in ``analysis_base`` to avoid circular imports with
 """
 
 import warnings
+import re
 from typing import List, Dict, Optional, Union, Literal, Tuple
 import numpy as np
 import pandas as pd
@@ -24,6 +25,8 @@ from src.core.factors import Factor, FactorType, ChangeabilityLevel
 from src.core.coding import DesignSpace
 from src.core.analysis_base import (
     ANOVAResults,
+    build_anova_effect_summary,
+    build_coefficient_significance,
     enforce_hierarchy,
     parse_model_term,
     quadratic,
@@ -346,14 +349,54 @@ class ANOVAAnalysis:
     
     def _build_formula(self, model_terms: List[str]) -> str:
         """Build formula - terms already in patsy notation."""
-        terms = [t for t in model_terms if t != '1']
+        terms = [t for t in self._wrap_categorical_terms(model_terms) if t != '1']
         if not terms:
             # Intercept-only model
             formula_rhs = '1'
         else:
             formula_rhs = ' + '.join(terms)
         return f"{self.response_name} ~ {formula_rhs}"
+
+    def _wrap_categorical_terms(self, model_terms: List[str]) -> List[str]:
+        """
+        Wrap categorical factor names in patsy ``C(...)`` so they are always
+        treated as categorical, regardless of the data column dtype.
+
+        Without this, a categorical factor whose levels are numeric-looking
+        labels (e.g. lot/batch IDs) can be silently fitted as a continuous
+        predictor: patsy decides categorical-vs-continuous purely from the
+        column dtype, and ``float64`` columns get a single linear coefficient
+        (DF=1) instead of k-1 dummy columns.
+        """
+        categorical = {f.name for f in self.factors if f.is_categorical()}
+        if not categorical:
+            return list(model_terms)
+
+        wrapped_terms = []
+        for term in model_terms:
+            if term == '1':
+                wrapped_terms.append(term)
+                continue
+            new_term = term
+            for name in sorted(categorical, key=len, reverse=True):
+                if re.search(r'C\(' + re.escape(name) + r'\)', new_term):
+                    continue
+                pattern = r'(?<![\w)])' + re.escape(name) + r'(?![\w])'
+                new_term = re.sub(pattern, f'C({name})', new_term)
+            wrapped_terms.append(new_term)
+        return wrapped_terms
     
+    @staticmethod
+    def _strip_c_wrappers(label: str) -> str:
+        """
+        Remove patsy ``C(...)`` wrappers from a term label so results are
+        reported using plain factor names, e.g.:
+          ``C(Egg_lot)`` -> ``Egg_lot``
+          ``C(Egg_lot)[T.41007666]`` -> ``Egg_lot[T.41007666]``
+          ``C(Egg_lot):Egg_percent`` -> ``Egg_lot:Egg_percent``
+        """
+        return re.sub(r'C\(([^()]*)\)', r'\1', label)
+
     def _build_results_object(self, fitted_model, model_terms: List[str], is_split_plot: bool) -> ANOVAResults:
         """Build results from fitted model."""
         try:
@@ -365,12 +408,21 @@ class ANOVAAnalysis:
             warnings.warn(f"Could not compute ANOVA: {e}")
             anova_table = pd.DataFrame()
         
+        if not anova_table.empty:
+            anova_table = anova_table.copy()
+            anova_table.index = [
+                self._strip_c_wrappers(str(i)) for i in anova_table.index
+            ]
+        
         effect_estimates = pd.DataFrame({
             'Coefficient': fitted_model.params,
             'Std_Error': fitted_model.bse,
             't_value': fitted_model.tvalues,
             'p_value': fitted_model.pvalues
         })
+        effect_estimates.index = [
+            self._strip_c_wrappers(str(i)) for i in effect_estimates.index
+        ]
         residuals = fitted_model.resid
         fitted_values = fitted_model.fittedvalues
         
@@ -398,6 +450,20 @@ class ANOVAAnalysis:
             else:
                 logworth_values.append(-np.log10(p))
         logworth_df['LogWorth'] = logworth_values
+
+        # Canonical effect tables.  ``coefficient_significance`` keeps the
+        # fitted-model coefficient tests; ``anova_effect_summary`` is sourced
+        # from the displayed ANOVA table.  The two are deliberately distinct.
+        block_names = ('Block',) if (
+            self.design_structure.get('has_blocking')
+            and not self.block_as_random
+        ) else ()
+        coefficient_significance = build_coefficient_significance(
+            effect_estimates, anova_table, block_factor_names=block_names
+        )
+        anova_effect_summary = build_anova_effect_summary(
+            anova_table, effect_estimates, block_factor_names=block_names
+        )
         
         return ANOVAResults(
             anova_table=anova_table,
@@ -411,7 +477,9 @@ class ANOVAAnalysis:
             is_split_plot=is_split_plot,
             r_squared=r_squared,
             adj_r_squared=adj_r_squared,
-            rmse=rmse
+            rmse=rmse,
+            coefficient_significance=coefficient_significance,
+            anova_effect_summary=anova_effect_summary,
         )
     
     def _compute_diagnostics(self, residuals: np.ndarray, fitted_values: np.ndarray) -> Dict:
@@ -425,7 +493,7 @@ class ANOVAAnalysis:
     def _validate_degrees_of_freedom(self, model_terms: List[str]) -> None:
         """Validate DF and warn about saturation."""
         n_runs = len(self.data)
-        n_params = len([t for t in model_terms if t != '1']) + 1
+        n_params = 1 + self._estimate_n_parameters(model_terms)
         df_error = n_runs - n_params
 
         if df_error < 0:
@@ -440,6 +508,40 @@ class ANOVAAnalysis:
             )
         elif df_error < 3:
             warnings.warn(f"Low df_error = {df_error}: Inference may be unreliable")
+
+    def _estimate_n_parameters(self, model_terms: List[str]) -> int:
+        """
+        Estimate the number of model parameters consumed by each term,
+        counting categorical dummy expansion.
+
+        A categorical main effect with k levels is fit as ``k-1`` dummy
+        columns; an interaction ``A*B`` consumes ``df_A * df_B`` columns, where
+        ``df`` of a categorical factor is ``k-1`` and ``1`` otherwise.
+        """
+        factor_df: Dict[str, int] = {}
+        for factor in self.factors:
+            if factor.is_categorical():
+                n_levels = len(factor.levels)
+                if n_levels < 2:
+                    n_levels = self.data[factor.name].nunique()
+                factor_df[factor.name] = max(n_levels - 1, 0)
+            else:
+                factor_df[factor.name] = 1
+
+        total = 0
+        for term in model_terms:
+            if term == '1':
+                continue
+            factor_list, op = parse_model_term(term)
+            if op == '*':
+                dfs = [factor_df.get(name, 1) for name in factor_list]
+                if not dfs or any(df <= 0 for df in dfs):
+                    continue
+                total += int(np.prod(dfs))
+            else:
+                name = factor_list[0] if factor_list else ''
+                total += factor_df.get(name, 1)
+        return total
 
     def _validate_split_plot_degrees_of_freedom(self) -> None:
         """Warn when the whole-plot stratum has too few groups for reliable inference."""

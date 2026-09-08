@@ -29,6 +29,8 @@ from src.ui.utils.plotting import (
     create_parity_plot,
     create_residual_plot,
     create_logworth_plot,
+    create_coefficient_significance_plot,
+    create_standardized_effects_plot,
     create_qq_plot,
     create_half_normal_plot,
     _label_with_units,
@@ -37,6 +39,7 @@ from src.ui.components.model_builder import display_model_builder, format_term_f
 from src.ui.components.diagnostics_display import display_diagnostics_tab
 from src.ui.components.lof_testing import display_lack_of_fit_test
 from src.ui.components.profiler_display import display_profiler_tab
+from src.ui.components.interaction_display import display_interaction_plot_tab
 from src.core.analysis import ANOVAAnalysis, generate_model_terms  # noqa: E402
 
 
@@ -234,21 +237,23 @@ if 'model_terms_per_response' not in st.session_state:
 if selected_response not in st.session_state['model_terms_per_response']:
     # Pre-populate from Step 2 if available, otherwise default to linear
     if 'model_terms' in st.session_state and st.session_state['model_terms']:
-        default_terms = st.session_state['model_terms']
+        default_terms = list(st.session_state['model_terms'])
         st.info("🎯 Using model selected in Step 2. You can modify it below if needed.")
     else:
         default_terms = generate_model_terms(factors, 'linear', include_intercept=True)
         st.info("ℹ️ No model was pre-selected. Defaulting to linear model. You can modify it below.")
     st.session_state['model_terms_per_response'][selected_response] = default_terms
 
-current_terms = st.session_state['model_terms_per_response'][selected_response]
+current_terms = list(st.session_state['model_terms_per_response'][selected_response])
 
 updated_terms = display_model_builder(
     factors=factors, current_terms=current_terms, response_name=selected_response,
     key_prefix=f"model_builder_{selected_response}"
 )
 
-# Force update if terms changed
+# Force update if terms changed. The builder may either mutate the list it was
+# given in place or return a whole new list; compare by value so both cases are
+# caught and trigger a refit.
 if updated_terms != current_terms:
     st.session_state['model_terms_per_response'][selected_response] = updated_terms
     invalidate_downstream_state(from_step=5)
@@ -340,9 +345,9 @@ _response_units_map = {
 _factor_units_map = {f.name: f.units for f in factors}
 current_response_units = _response_units_map.get(selected_response)
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Model Fit", "📉 Effects & Residuals",
-    "🔍 Design Diagnostics", "📈 Profiler"
+    "🔍 Design Diagnostics", "📈 Profiler", "🕸️ Interaction Plots"
 ])
 
 with tab1:
@@ -389,17 +394,108 @@ with tab1:
         st.plotly_chart(fig, width='stretch')
     
     st.divider()
-    
-    st.markdown("**Effect Significance (Pareto)**")
-    if not results.logworth.empty:
-        p_values = {}
-        for term in results.logworth.index:
-            p_val = 10 ** (-results.logworth.loc[term, 'LogWorth'])
-            p_values[term] = p_val
-        
-        fig = create_logworth_plot(results.logworth, p_values)
-        st.plotly_chart(fig, width='stretch')
-    
+
+    # --- Effect significance: coefficient-level LogWorth vs ANOVA effects ---
+    _has_coef = (
+        results.coefficient_significance is not None
+        and not results.coefficient_significance.empty
+    )
+    _has_anova_effects = (
+        results.anova_effect_summary is not None
+        and not results.anova_effect_summary.empty
+    )
+
+    if _has_coef or _has_anova_effects or not results.logworth.empty:
+        st.markdown("## Effect Significance")
+        view = st.segmented_control(
+            "Effect chart view",
+            options=["**Side-by-Side**", "**Coefficient LogWorth**", "**DOE Standardized Effects**"],
+            default="**Side-by-Side**",
+            selection_mode="single",
+            label_visibility="collapsed",
+        )
+        show_block = st.checkbox(
+            "Show block/design terms",
+            value=True,
+            help="Controls display only; hiding block terms does not refit the model.",
+        )
+        st.caption(
+            "Coefficient LogWorth summarizes individual fitted coefficients. "
+            "DOE standardized effects summarize term-level ANOVA tests. "
+            "The results can differ for categorical, blocked, split-plot, "
+            "hierarchical, and interaction models."
+        )
+
+        def _coef_fig():
+            if _has_coef:
+                return create_coefficient_significance_plot(
+                    results.coefficient_significance, alpha=0.05, show_block=show_block
+                )
+            if not results.logworth.empty:
+                p_values = {
+                    term: 10 ** (-results.logworth.loc[term, 'LogWorth'])
+                    for term in results.logworth.index
+                }
+                return create_logworth_plot(results.logworth, p_values)
+            return None
+
+        def _anova_fig():
+            if _has_anova_effects:
+                return create_standardized_effects_plot(
+                    results.anova_effect_summary, alpha=0.05, show_block=show_block
+                )
+            return None
+
+        _effects_caption = (
+            "Bar color — blue: positive effect · red: negative effect · "
+            "gray: multi-df or block/design term. "
+            "Lines (shown when a single error stratum applies) — "
+            "dashed: t-critical at α=0.05 · dotted: Bonferroni limit (α/m)."
+        )
+
+        def _shared_height():
+            n = 0
+            if _has_coef:
+                n = max(n, len(results.coefficient_significance))
+            if _has_anova_effects:
+                n = max(n, len(results.anova_effect_summary))
+            return max(320, n * 26)
+
+        if view == "**Side-by-Side**":
+            c1, c2 = st.columns(2)
+            with c1:
+                fig = _coef_fig()
+                if fig is not None:
+                    st.plotly_chart(
+                        fig, width='stretch', height=_shared_height(), theme=None
+                    )
+            with c2:
+                fig = _anova_fig()
+                if fig is not None:
+                    st.plotly_chart(
+                        fig, width='stretch', height=_shared_height(), theme=None
+                    )
+                    st.caption(_effects_caption)
+                else:
+                    st.info(
+                        "ANOVA-based standardized effects are only available "
+                        "for models with a term-level ANOVA table."
+                    )
+        elif view == "**Coefficient LogWorth**":
+            fig = _coef_fig()
+            if fig is not None:
+                st.plotly_chart(fig, width='stretch', theme=None)
+        else:
+            fig = _anova_fig()
+            if fig is not None:
+                st.plotly_chart(fig, width='stretch', theme=None)
+                st.caption(_effects_caption)
+            else:
+                st.info(
+                    "ANOVA-based standardized effects are only available "
+                    "for models with a term-level ANOVA table."
+                )
+
     st.divider()
     
     st.markdown("**ANOVA Table**")
@@ -645,6 +741,22 @@ with tab4:
         results=results,
         factors=factors,
         format_term_for_display=format_term_for_display,
+        response_units=current_response_units,
+    )
+with tab5:
+    # Interaction plots require a fitted model for the significance overlay.
+    if selected_response not in st.session_state['fitted_models']:
+        st.warning("Please fit a model first")
+        st.stop()
+
+    interaction_results = st.session_state['fitted_models'][selected_response]
+
+    display_interaction_plot_tab(
+        selected_response=selected_response,
+        design=design_filtered,
+        response=response_filtered,
+        factors=factors,
+        results=interaction_results,
         response_units=current_response_units,
     )
 st.divider()

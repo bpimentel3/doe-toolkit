@@ -204,6 +204,128 @@ class TestFullFactorial:
         with pytest.raises(ValueError, match="cannot exceed number of runs"):
             full_factorial([temp], n_blocks=n_runs + 1)
 
+    def test_with_replicates(self):
+        """Test factorial with replicates."""
+        temp = Factor("Temperature", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[150, 200])
+        pressure = Factor("Pressure", FactorType.CONTINUOUS,
+                         ChangeabilityLevel.EASY, levels=[50, 100])
+        
+        design = full_factorial([temp, pressure], n_replicates=2, randomize=False)
+        
+        # 4 factorial runs x 2 replicates = 8 runs
+        assert len(design) == 8
+        
+        # Should have a Replicate column
+        assert 'Replicate' in design.columns
+        
+        # Each replicate should appear 4 times
+        replicate_counts = design['Replicate'].value_counts().sort_index()
+        assert list(replicate_counts.index) == [1, 2]
+        assert all(replicate_counts == 4)
+        
+        # Each factor combination should appear exactly twice (once per replicate)
+        combo_counts = design.groupby(['Temperature', 'Pressure']).size()
+        assert all(combo_counts == 2)
+
+    def test_with_replicates_and_center_points(self):
+        """Test factorial with replicates and center points."""
+        temp = Factor("Temperature", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[150, 200])
+        
+        design = full_factorial([temp], n_center_points=2, n_replicates=3, randomize=False)
+        
+        # (2 factorial + 2 center) x 3 replicates = 12 runs
+        assert len(design) == 12
+        
+        # Replicate column present with values 1, 2, 3
+        assert set(design['Replicate'].unique()) == {1, 2, 3}
+        
+        # Each replicate has 4 runs (2 factorial + 2 center)
+        replicate_counts = design['Replicate'].value_counts().sort_index()
+        assert all(replicate_counts == 4)
+
+    def test_replicates_run_order_sequential(self):
+        """Test that RunOrder is sequential across all replicates."""
+        temp = Factor("Temperature", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[150, 200])
+        pressure = Factor("Pressure", FactorType.CONTINUOUS,
+                         ChangeabilityLevel.EASY, levels=[50, 100])
+        
+        design = full_factorial([temp, pressure], n_replicates=3, randomize=False)
+        
+        # RunOrder should be 1 through 12
+        assert list(design['RunOrder']) == list(range(1, 13))
+
+    def test_single_replicate_no_column(self):
+        """Test that n_replicates=1 (default) produces no Replicate column."""
+        temp = Factor("Temperature", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[150, 200])
+        
+        design = full_factorial([temp], randomize=False)
+        
+        assert 'Replicate' not in design.columns
+        assert len(design) == 2
+
+    def test_invalid_replicates_raises_error(self):
+        """Test that n_replicates < 1 raises error."""
+        temp = Factor("Temperature", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[150, 200])
+        
+        with pytest.raises(ValueError, match="Number of replicates"):
+            full_factorial([temp], n_replicates=0)
+
+    def test_with_blocking_and_replicates(self):
+        """Test factorial with both blocking and replicates."""
+        temp = Factor("Temperature", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[150, 200])
+        pressure = Factor("Pressure", FactorType.CONTINUOUS,
+                         ChangeabilityLevel.EASY, levels=[50, 100])
+        
+        design = full_factorial(
+            [temp, pressure], n_replicates=2, n_blocks=2, randomize=False
+        )
+        
+        # 4 factorial points x 2 replicates = 8 runs
+        assert len(design) == 8
+        
+        # Both Replicate and Block columns present
+        assert 'Replicate' in design.columns
+        assert 'Block' in design.columns
+        
+        # 2 replicates, 2 blocks
+        assert set(design['Replicate'].unique()) == {1, 2}
+        assert set(design['Block'].unique()) == {1, 2}
+        
+        # Blocks are balanced: 4 runs each
+        block_counts = design['Block'].value_counts().sort_index()
+        assert all(block_counts == 4)
+
+    def test_blocking_balanced_sizes(self):
+        """Test that blocks are evenly sized."""
+        temp = Factor("Temperature", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[150, 200])
+        pressure = Factor("Pressure", FactorType.CONTINUOUS,
+                         ChangeabilityLevel.EASY, levels=[50, 100])
+        rpm = Factor("RPM", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[100, 200])
+        
+        # 2^3 = 8 runs into 4 blocks = 2 runs each
+        design = full_factorial([temp, pressure, rpm], n_blocks=4, randomize=False)
+        
+        assert 'Block' in design.columns
+        block_sizes = design['Block'].value_counts().sort_index()
+        assert all(block_sizes == 2)
+
+    def test_unblocked_has_no_block_column(self):
+        """Test that default (n_blocks=1) produces no Block column."""
+        temp = Factor("Temperature", FactorType.CONTINUOUS,
+                     ChangeabilityLevel.EASY, levels=[150, 200])
+        
+        design = full_factorial([temp], randomize=False)
+        
+        assert 'Block' not in design.columns
+
 
 class TestDecodeDesign:
     """Test design decoding."""

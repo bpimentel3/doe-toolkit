@@ -27,7 +27,14 @@ import statsmodels.api as sm
 from statsmodels.formula.api import ols
 
 from src.core.factors import Factor, ChangeabilityLevel
-from src.core.analysis_base import ANOVAResults, parse_model_term
+from src.core.analysis_base import (
+    ANOVAResults,
+    build_anova_effect_summary,
+    build_coefficient_significance,
+    compute_actual_coefficients,
+    find_effect_estimate_key,
+    parse_model_term,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -622,17 +629,30 @@ def fit_split_plot_anova(
             lw = 16.0
         else:
             lw = -np.log10(p)
+        key = find_effect_estimate_key(source, effect_estimates.index)
+        coefficient = (
+            effect_estimates.loc[key, 'Coefficient']
+            if key is not None else np.nan
+        )
         logworth_rows.append({
             'Source': source,
-            'Coefficient': effect_estimates.loc[
-                _find_effect_estimate_key(source, effect_estimates.index), 'Coefficient'
-            ] if _find_effect_estimate_key(source, effect_estimates.index) else np.nan,
+            'Coefficient': coefficient,
             'p_value': p,
             'LogWorth': lw,
             'Stratum': row['Stratum'],
         })
 
     logworth_df = pd.DataFrame(logworth_rows).set_index('Source')
+
+    # Canonical effect tables (kept distinct: coefficient-level vs ANOVA
+    # term-level).  Used by the two effect charts in the UI.
+    block_names = ('Block',) if design_structure.get('has_blocking') else ()
+    coefficient_significance = build_coefficient_significance(
+        effect_estimates, anova_table, block_factor_names=block_names
+    )
+    anova_effect_summary = build_anova_effect_summary(
+        anova_table, effect_estimates, block_factor_names=block_names
+    )
 
     return ANOVAResults(
         anova_table=anova_table,
@@ -647,37 +667,6 @@ def fit_split_plot_anova(
         r_squared=r_squared,
         adj_r_squared=adj_r_squared,
         rmse=rmse,
+        coefficient_significance=coefficient_significance,
+        anova_effect_summary=anova_effect_summary,
     )
-
-
-def _find_effect_estimate_key(
-    source: str,
-    index: pd.Index,
-) -> Optional[str]:
-    """
-    Map an ANOVA source label back to a coefficient table index entry.
-
-    Parameters
-    ----------
-    source : str
-        ANOVA table source name (e.g. 'Temperature', 'Temperature*Time').
-    index : pd.Index
-        Index of the effect_estimates DataFrame.
-
-    Returns
-    -------
-    str or None
-        Matching key, or None if not found.
-    """
-    # Direct match
-    if source in index:
-        return source
-    # Interaction: 'A*B' -> 'A:B' in patsy
-    patsy_form = source.replace('*', ':')
-    if patsy_form in index:
-        return patsy_form
-    # Partial match for categorical dummies
-    for key in index:
-        if key.startswith(source) or key.startswith(patsy_form):
-            return key
-    return None

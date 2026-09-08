@@ -182,7 +182,9 @@ def _build_model_fit_section(
         HTML string for this section.
     """
     from src.ui.utils.plotting import (
+        create_coefficient_significance_plot,
         create_logworth_plot,
+        create_standardized_effects_plot,
         create_parity_plot,
         create_residual_plot,
     )
@@ -237,8 +239,26 @@ def _build_model_fit_section(
             )
     parts.append("</div>")
 
-    # --- LogWorth Pareto ---
-    if results.logworth is not None and not results.logworth.empty:
+    # --- Coefficient LogWorth Pareto + ANOVA standardized effects ---
+    if results.coefficient_significance is not None and not results.coefficient_significance.empty:
+        try:
+            fig = create_coefficient_significance_plot(
+                results.coefficient_significance,
+                alpha=0.05,
+                show_block=True,
+            )
+            parts.append(
+                _plotly_div(
+                    fig,
+                    f"logworth_{response_name}",
+                    "Coefficient Significance (LogWorth)",
+                )
+            )
+        except Exception as exc:
+            parts.append(
+                f'<div class="plot-error">LogWorth plot failed: {exc}</div>'
+            )
+    elif results.logworth is not None and not results.logworth.empty:
         try:
             p_values = {
                 term: 10 ** (-results.logworth.loc[term, "LogWorth"])
@@ -249,12 +269,37 @@ def _build_model_fit_section(
                 _plotly_div(
                     fig,
                     f"logworth_{response_name}",
-                    "Effect Significance (Pareto / LogWorth)",
+                    "Coefficient Significance (LogWorth)",
                 )
             )
         except Exception as exc:
             parts.append(
                 f'<div class="plot-error">LogWorth plot failed: {exc}</div>'
+            )
+
+    if results.anova_effect_summary is not None and not results.anova_effect_summary.empty:
+        try:
+            fig = create_standardized_effects_plot(
+                results.anova_effect_summary,
+                alpha=0.05,
+                show_block=True,
+            )
+            parts.append(
+                _plotly_div(
+                    fig,
+                    f"effects_{response_name}",
+                    "DOE Pareto of Standardized Effects",
+                )
+            )
+            parts.append(
+                "<p class='muted'>Bar color — blue: positive effect · red: "
+                "negative effect · gray: multi-df or block/design term. "
+                "Dashed vertical line — t-critical at α=0.05; dotted vertical "
+                "line — Bonferroni limit (α/m).</p>"
+            )
+        except Exception as exc:
+            parts.append(
+                f'<div class="plot-error">Standardized effects plot failed: {exc}</div>'
             )
 
     # --- ANOVA table ---
@@ -748,7 +793,10 @@ def _build_optimization_section(response_name: str) -> str:
 
         if settings:
             rows = [
-                {"Factor": k, "Optimal Setting": f"{v:.4f}"}
+                {
+                    "Factor": k,
+                    "Optimal Setting": v if isinstance(v, str) else f"{v:.4f}",
+                }
                 for k, v in settings.items()
             ]
             parts.append(_df_to_html(pd.DataFrame(rows)))
@@ -813,7 +861,10 @@ def _build_optimization_section(response_name: str) -> str:
         settings = d_result.optimal_settings or {}
         if settings:
             rows = [
-                {"Factor": k, "Optimal Setting": f"{v:.4f}"}
+                {
+                    "Factor": k,
+                    "Optimal Setting": v if isinstance(v, str) else f"{v:.4f}",
+                }
                 for k, v in settings.items()
             ]
             parts.append(_df_to_html(pd.DataFrame(rows)))

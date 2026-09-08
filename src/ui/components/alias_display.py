@@ -120,7 +120,7 @@ def _render_body(
     # Heatmap
     st.markdown("**Term Correlation Heatmap** (|r|)")
     fig = _build_heatmap(corr, col_labels)
-    st.plotly_chart(fig, use_container_width=True, theme=None)
+    st.plotly_chart(fig, width="stretch", theme=None)
 
     # Flagged pairs table
     flagged = _find_flagged_pairs(corr, col_labels)
@@ -132,7 +132,7 @@ def _render_body(
         flagged_df = pd.DataFrame(
             flagged, columns=["Term A", "Term B", "|r|"]
         ).sort_values("|r|", ascending=False)
-        st.dataframe(flagged_df, hide_index=True, use_container_width=True)
+        st.dataframe(flagged_df, hide_index=True, width="stretch")
     else:
         st.success(
             f"✅ No term pairs with |r| ≥ {_ALIAS_FLAG_THRESHOLD:.1f}. "
@@ -423,7 +423,7 @@ def _render_alias_chains(
 
     if rows:
         alias_df = pd.DataFrame(rows)
-        st.dataframe(alias_df, hide_index=True, use_container_width=True)
+        st.dataframe(alias_df, hide_index=True, width="stretch")
     else:
         st.info("No alias chains up to 3rd order.")
 

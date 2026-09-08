@@ -14,7 +14,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import re
 
 from src.ui.utils.state_management import (
     initialize_session_state,
@@ -25,6 +24,10 @@ from src.ui.utils.state_management import (
 from src.core.coding import DesignSpace
 from src.core.factors import Factor
 from src.ui.utils.csv_parser import generate_doe_csv
+from src.ui.utils.response_definitions import (
+    validate_response_name,
+    response_rows_to_definitions,
+)
 from src.ui.components.constraint_builder import (
     format_constraint_preview,
     validate_constraints
@@ -32,29 +35,7 @@ from src.ui.components.constraint_builder import (
 
 
 def _validate_response_name(name: str, existing_responses: list) -> bool:
-    """
-    Validate response name.
-    
-    Rules:
-    - Must be alphanumeric + underscore
-    - Must not be duplicate (case-insensitive)
-    - Must not be reserved word
-    """
-    # Check format
-    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
-        return False
-    
-    # Check for duplicates (case-insensitive)
-    existing_names = [r['name'].lower() for r in existing_responses]
-    if name.lower() in existing_names:
-        return False
-    
-    # Check for reserved words
-    reserved = {'I', 'C', 'Q', 'T'}  # patsy/pandas reserved
-    if name in reserved:
-        return False
-    
-    return True
+    return validate_response_name(name, existing_responses)
 
 
 # Initialize state
@@ -93,88 +74,91 @@ if st.session_state.get('design') is None:
     
     response_defs = st.session_state['response_definitions']
     
-    # Response definition form
-    with st.form("response_form", border=True):
-        # Container for response rows
-        response_rows = []
-        
-        # Show existing responses with option to edit/remove
-        for i, response in enumerate(response_defs):
-            col1, col2, col3 = st.columns([2, 1.5, 0.5])
-            
-            with col1:
-                response_rows.append({
-                    'name': st.text_input(
-                        "Response Name",
-                        value=response.get('name', ''),
-                        key=f"response_name_{i}",
-                        label_visibility="collapsed"
-                    ),
-                    'index': i
-                })
-            
-            with col2:
-                units = st.text_input(
-                    "Units",
-                    value=response.get('units', '') if response.get('units') else '',
-                    key=f"response_units_{i}",
-                    placeholder="e.g., %, mg/mL",
-                    label_visibility="collapsed"
-                )
-                response_rows[i]['units'] = units if units else None
-            
-            with col3:
-                if st.form_submit_button(
-                    "❌",
-                    key=f"remove_response_{i}",
-                    help="Remove this response"
-                ):
-                    st.session_state['response_definitions'].pop(i)
-                    st.rerun()
-        
-        # Add new empty row for adding response
-        col1, col2, col3 = st.columns([2, 1.5, 0.5])
-        
-        with col1:
-            new_name = st.text_input(
-                "Response Name",
-                value='',
-                key="response_name_new",
-                label_visibility="collapsed"
-            )
-        
-        with col2:
-            new_units = st.text_input(
-                "Units",
-                value='',
-                key="response_units_new",
-                placeholder="e.g., %, mg/mL",
-                label_visibility="collapsed"
-            )
-        
-        col_left, col_right = st.columns([2.5, 1])
-        
-        with col_right:
-            if st.form_submit_button("+ Add Response", width='stretch'):
-                if new_name.strip():
-                    # Validate response name
-                    if not _validate_response_name(new_name, st.session_state['response_definitions']):
-                        st.error("Response name invalid or already exists")
-                    else:
-                        st.session_state['response_definitions'].append({
-                            'name': new_name.strip(),
-                            'units': new_units.strip() if new_units.strip() else None
-                        })
-                        st.rerun()
+    st.info(
+        "💡 **Quick Tips:**\n"
+        "- Use the **+ button at the bottom** of the table to add new responses\n"
+        "- Add or remove rows directly in the table (like the factors grid)\n"
+        "- Names with spaces, parentheses, etc. are **auto-cleaned** to be formula-safe "
+        "(e.g., `Day 0 Max Force (g)` → `Day_0_Max_Force_g`)"
+    )
+
+    # Editable table of responses (JMP-style, mirrors the factors grid)
+    def responses_to_dataframe(response_defs) -> pd.DataFrame:
+        """Convert response definitions to an editable DataFrame."""
+        if not response_defs:
+            return pd.DataFrame({
+                'Name': pd.Series([], dtype='str'),
+                'Units': pd.Series([], dtype='str')
+            })
+        return pd.DataFrame([
+            {'Name': str(r.get('name', '')), 'Units': str(r.get('units', '') or '')}
+            for r in response_defs
+        ])
+
+    response_column_config = {
+        'Name': st.column_config.TextColumn(
+            'Response Name',
+            help='Descriptive name (e.g., Max Force). Spaces/parentheses are '
+                 'auto-cleaned to be formula-safe.',
+            required=True,
+            max_chars=50
+        ),
+        'Units': st.column_config.TextColumn(
+            'Units',
+            help='Optional units (e.g., %, mg/mL)',
+            max_chars=20
+        )
+    }
+
+    edited_responses_df = st.data_editor(
+        responses_to_dataframe(response_defs),
+        column_config=response_column_config,
+        width='stretch',
+        num_rows='dynamic',  # Allow adding/deleting rows
+        key='response_table_editor'
+    )
+
+    st.divider()
+
+    # Action buttons
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        if st.button("💾 Save Responses", type="primary", width='stretch'):
+            # Validate and save
+            with st.spinner("Validating responses..."):
+                defs, errors, warnings = response_rows_to_definitions(edited_responses_df)
+
+                if errors:
+                    st.error("**Validation Errors:**")
+                    for error in errors:
+                        st.error(f"• {error}")
                 else:
-                    st.warning("Response name cannot be empty")
-        
-        # Update existing responses from form input
-        for i, row in enumerate(response_rows):
-            if i < len(st.session_state['response_definitions']):
-                st.session_state['response_definitions'][i]['name'] = row['name']
-                st.session_state['response_definitions'][i]['units'] = row['units']
-    
+                    st.session_state['response_definitions'] = defs
+
+                    if warnings:
+                        with st.expander("⚠️ Response Name Sanitization", expanded=True):
+                            st.warning(
+                                f"**{len(warnings)} response name(s) were modified for compatibility:**"
+                            )
+                            for warning in warnings:
+                                st.markdown(f"**Row {warning['row']}:**")
+                                st.markdown(f"- Original: `{warning['original']}`")
+                                st.markdown(f"- Sanitized: `{warning['sanitized']}`")
+                                if warning['changes']:
+                                    with st.expander(f"Why was '{warning['original']}' changed?"):
+                                        for change in warning['changes']:
+                                            st.caption(f"• {change}")
+                    else:
+                        st.success(f"✅ Saved {len(defs)} response(s) successfully!")
+                    st.rerun()
+
+    with col2:
+        if len(response_defs) > 0:
+            if st.button("🗑️ Clear All Responses", width='stretch'):
+                st.session_state['response_definitions'] = []
+                st.rerun()
+
     # Show summary
     if st.session_state['response_definitions']:
         st.write(f"**Defined responses ({len(st.session_state['response_definitions'])}):**")
@@ -254,12 +238,14 @@ if st.session_state.get('design') is None:
                 if design_type == "Full Factorial":
                     from src.core.full_factorial import full_factorial
                     
+                    n_blocks = design_config.get('n_blocks', 1)
                     design = full_factorial(
                         factors=factors,
-                        n_center_points = design_config.get('n_center_points', 0),
+                        n_center_points=design_config.get('n_center_points', 0),
+                        n_replicates=design_config.get('n_replicates', 1),
                         randomize=st.session_state.get('randomize', True),
                         random_seed=st.session_state.get('random_seed'),
-                        n_blocks=st.session_state.get('n_blocks')
+                        n_blocks=None if n_blocks <= 1 else n_blocks
                     )
                     
                     metadata = {
@@ -284,10 +270,11 @@ if st.session_state.get('design') is None:
                     )
                     
                     # Generate design
+                    n_ff_blocks = design_config.get('n_blocks', 1)
                     design = ff.generate(
                         randomize=st.session_state.get('randomize', True),
                         random_seed=st.session_state.get('random_seed'),
-                        n_blocks=st.session_state.get('n_blocks')
+                        n_blocks=None if n_ff_blocks <= 1 else n_ff_blocks
                     )
                     
                     # Store metadata

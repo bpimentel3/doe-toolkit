@@ -232,6 +232,14 @@ if st.session_state.get('design_type'):
             help="Full repetitions of entire design"
         )
         
+        n_blocks = st.number_input(
+            "Number of Blocks",
+            min_value=1,
+            max_value=10,
+            value=1,
+            help="Divide runs into blocks to account for nuisance variation. Use 1 for no blocking."
+        )
+        
         randomize = st.checkbox("Randomize Run Order", value=True)
         
         # Store config
@@ -239,11 +247,13 @@ if st.session_state.get('design_type'):
             'n_levels': n_levels,
             'n_center_points': n_center_points,
             'n_replicates': n_replicates,
+            'n_blocks': n_blocks,
             'randomize': randomize
         }
         
         # Estimate runs
-        total_runs = (n_levels ** len(factors)) * n_replicates + n_center_points
+        base_runs = n_levels ** len(factors)
+        total_runs = (base_runs + n_center_points) * n_replicates
         st.info(f"**Estimated runs:** {total_runs}")
     
     elif design_type == "Fractional Factorial":
@@ -317,6 +327,14 @@ if st.session_state.get('design_type'):
             value=3
         )
         
+        n_blocks = st.number_input(
+            "Number of Blocks",
+            min_value=1,
+            max_value=10,
+            value=1,
+            help="Divide runs into blocks to account for nuisance variation. Use 1 for no blocking."
+        )
+        
         randomize = st.checkbox("Randomize Run Order", value=True)
         
         # Store config
@@ -326,6 +344,7 @@ if st.session_state.get('design_type'):
             'generator_mode': generator_mode,
             'custom_generators': custom_generators,
             'n_center_points': n_center_points,
+            'n_blocks': n_blocks,
             'randomize': randomize
         }
         

@@ -15,6 +15,7 @@ import pandas as pd
 from unittest.mock import Mock
 
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
+from src.core.full_factorial import full_factorial
 from src.core.optimization import (
     optimize_response,
     optimize_desirability,
@@ -22,7 +23,9 @@ from src.core.optimization import (
     desirability_maximize,
     desirability_minimize,
     desirability_target,
-    predict_with_intervals
+    predict_with_intervals,
+    _nuisance_columns_for_model,
+    _nearest_level,
 )
 from src.core.optimal.constraints import LinearConstraint
 from src.core.analysis import ANOVAAnalysis, ANOVAResults
@@ -825,3 +828,250 @@ class TestEdgeCases:
         
         with pytest.raises(ValueError, match="No model provided"):
             optimize_desirability(models, simple_factors, df)
+
+
+class TestCategoricalFactors:
+    """Optimization over mixed continuous + categorical designs."""
+
+    @staticmethod
+    def _mixed_design(seed=7):
+        """Full factorial x Continuous X1 + categorical Catalyst with a strong
+        level effect.  Catalyst 'B' is far better than 'A'."""
+        x1 = Factor("X1", FactorType.CONTINUOUS, ChangeabilityLevel.EASY,
+                    levels=[-1, 1])
+        catalyst = Factor("Catalyst", FactorType.CATEGORICAL,
+                          ChangeabilityLevel.EASY, levels=["A", "B"])
+        factors = [x1, catalyst]
+        design = full_factorial(factors, n_replicates=3, randomize=False)
+
+        rng = np.random.default_rng(seed)
+        # X1 raises response by +2 per coded unit; Catalyst B adds +10.
+        base_a = design["X1"].astype(float) * 2.0
+        level_b = (design["Catalyst"] == "B").astype(float) * 10.0
+        response = np.asarray(5.0 + base_a + level_b, dtype=float).copy()
+        response += rng.normal(0, 0.05, len(response))
+        return factors, design, response
+
+    def test_single_response_chooses_best_categorical_level(self):
+        factors, design, response = self._mixed_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["X1", "Catalyst", "X1*Catalyst"])
+
+        opt = optimize_response(
+            results, factors, objective="maximize", seed=1
+        )
+        assert opt.success
+
+        settings = opt.optimal_settings
+        # Catalyst B is strictly better (+10), so it must be chosen.
+        assert settings["Catalyst"] == "B"
+        # X1 maxed out (+1) for maximize.
+        assert settings["X1"] == pytest.approx(1, abs=0.2)
+        # Predicted response near the optimum of the linear model.
+        assert opt.predicted_response == pytest.approx(17, abs=0.5)
+
+    def test_single_response_respects_pinned_level(self):
+        factors, design, response = self._mixed_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["X1", "Catalyst", "X1*Catalyst"])
+
+        opt = optimize_response(
+            results, factors, objective="maximize", seed=1,
+            pinned_levels={"Catalyst": "A"},
+        )
+        assert opt.success
+        assert opt.optimal_settings["Catalyst"] == "A"
+        assert opt.optimal_settings["X1"] == pytest.approx(1, abs=0.2)
+        # With Catalyst A the linear optimum is 5 + 2 = 7.
+        assert opt.predicted_response == pytest.approx(7, abs=0.5)
+
+    def test_invalid_pinned_level_raises(self):
+        factors, design, response = self._mixed_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["X1", "Catalyst", "X1*Catalyst"])
+        with pytest.raises(ValueError, match="not a valid level"):
+            optimize_response(
+                results, factors, objective="maximize", seed=1,
+                pinned_levels={"Catalyst": "Z"},
+            )
+
+    def test_desirability_over_mixed_design(self):
+        factors, design, response = self._mixed_design()
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["X1", "Catalyst", "X1*Catalyst"])
+
+        df = DesirabilityFunction(["Yield"])
+        df.add_response("Yield", "maximize", low=5, high=20)
+
+        dopt = optimize_desirability(
+            {"Yield": results}, factors, df, seed=1
+        )
+        assert dopt.success
+        assert dopt.optimal_settings["Catalyst"] == "B"
+        assert dopt.optimal_settings["X1"] == pytest.approx(1, abs=0.2)
+
+    def test_prediction_frame_hold_categoricals(self):
+        """to_prediction_frame returns labels, not raw indices."""
+        factors, _, _ = self._mixed_design()
+        from src.core.optimization import _OptimizationDims
+        dims = _OptimizationDims(factors)
+        for idx in (0, 1):
+            frame = dims.to_prediction_frame(np.array([0.0, float(idx)]))
+            assert frame["Catalyst"].iloc[0] == (
+                "A" if idx == 0 else "B"
+            )
+
+
+class TestBlockedDesignOptimization:
+    """Optimization on blocked designs must ignore the Block nuisance term.
+
+    Regression: a blocked design appends ' + Block' to the model formula, but
+    the optimizer's prediction frame omitted the Block column, crashing patsy
+    with 'NameError: name Block is not defined'. Block is not optimizable, so
+    it is pinned to its reference (first) level and its effect ignored.
+    """
+
+    def _blocked_fit(self):
+        factors = [
+            Factor("A", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
+            Factor("B", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1])
+        ]
+        # Each run replicated introduces error df so the model is not saturated.
+        design = full_factorial(factors, n_blocks=2, randomize=False, n_replicates=2)
+        # Block effect: block 2 shifts the response by +10.
+        response = 10 + 2 * design["A"] + 3 * design["B"] + 10 * (design["Block"] - 1)
+        analysis = ANOVAAnalysis(design, response, factors, block_as_random=False)
+        results = analysis.fit(["A", "B"])
+        return factors, design, results
+
+    def test_nuisance_columns_detect_block_reference_level(self):
+        factors, _, results = self._blocked_fit()
+        extra = _nuisance_columns_for_model(results.fitted_model, factors)
+        # Block is cast to str during fit (analysis.py), so reference level is '1'.
+        assert extra == {"Block": "1"}
+
+    def test_optimize_response_ignores_block(self):
+        factors, design, results = self._blocked_fit()
+        opt = optimize_response(
+            anova_results=results, factors=factors, objective="maximize", seed=42
+        )
+        assert opt.success
+        assert opt.prediction_interval is not None
+        # The optimum must match a direct prediction at the reference Block='1',
+        # i.e. the block-2 shift (+10) is ignored.
+        settings = opt.optimal_settings
+        ref = results.fitted_model.predict(
+            pd.DataFrame([{
+                "Block": "1",
+                "A": settings["A"],
+                "B": settings["B"],
+            }])
+        )[0]
+        assert opt.predicted_response == pytest.approx(float(ref), rel=1e-6)
+        # And it should NOT equal the same settings predicted in block 2.
+        blk2 = results.fitted_model.predict(
+            pd.DataFrame([{
+                "Block": "2",
+                "A": settings["A"],
+                "B": settings["B"],
+            }])
+        )[0]
+        assert blk2 != pytest.approx(float(ref), abs=0.1)
+
+    def test_optimize_desirability_ignores_block(self):
+        factors, _, results = self._blocked_fit()
+        df = DesirabilityFunction(["Yield"])
+        df.add_response("Yield", "maximize", low=10, high=20)
+        dopt = optimize_desirability(
+            {"Yield": results}, factors, df, seed=42
+        )
+        assert dopt.success
+        # Predicted response at optimum equals reference-block prediction.
+        settings = dopt.optimal_settings
+        ref = results.fitted_model.predict(
+            pd.DataFrame([{
+                "Block": "1",
+                "A": settings["A"],
+                "B": settings["B"],
+            }])
+        )[0]
+        assert dopt.predicted_responses["Yield"] == pytest.approx(float(ref), rel=1e-6)
+
+
+class TestNearestLevel:
+    """_nearest_level('...') must snap a real value to a declared level."""
+
+    def test_exact_level(self):
+        assert _nearest_level(1.2, [1.2, 1.8]) == 1.2
+        assert _nearest_level(1.8, [1.2, 1.8]) == 1.8
+
+    def test_midpoint_rounds_to_lower(self):
+        # Midway between 1.2 and 1.8 -> min() picks the first (1.2).
+        assert _nearest_level(1.5, [1.2, 1.8]) == 1.2
+
+    def test_out_of_range_clamped_to_nearest_level(self):
+        assert _nearest_level(-50.0, [1.2, 1.8]) == 1.2
+        assert _nearest_level(99.0, [1.2, 1.8]) == 1.8
+
+    def test_integer_levels(self):
+        assert _nearest_level(23, [10, 20, 30]) == 20
+
+
+class TestDiscreteNumericOptimization:
+    """Discrete_numeric factors must be optimizable and snap to declared levels.
+
+    Regression: the Optimize page listed only factors matching its
+    continuous/categorical branches, so a discrete_numeric factor such as
+    Egg_percent was invisible. The backend also optimized discrete factors to
+    off-grid real values instead of their declared levels.
+    """
+
+    def _discrete_fit(self):
+        factors = [
+            Factor("T", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, levels=[-1, 1]),
+            Factor("D", FactorType.DISCRETE_NUMERIC, ChangeabilityLevel.EASY, levels=[1.2, 1.8]),
+        ]
+        design = full_factorial(factors, randomize=False, random_seed=1)
+        # Response rises with both factors; optimum at T=+1, D=1.8.
+        response = 10 + 2 * design["T"] + 5 * design["D"]
+        analysis = ANOVAAnalysis(design, response, factors)
+        results = analysis.fit(["1", "T", "D"])
+        return factors, design, results
+
+    def test_optimize_response_snaps_discrete_to_declared_level(self):
+        factors, _, results = self._discrete_fit()
+        opt = optimize_response(
+            anova_results=results, factors=factors, objective="maximize", seed=42
+        )
+        assert opt.success
+        assert opt.optimal_settings["D"] in (1.2, 1.8)
+        assert opt.prediction_interval is not None
+        # Prediction must be self-consistent with the reported (snapped) settings.
+        s = opt.optimal_settings
+        ref = results.fitted_model.predict(
+            pd.DataFrame([{"T": s["T"], "D": s["D"]}])
+        )[0]
+        assert opt.predicted_response == pytest.approx(float(ref), rel=1e-6)
+
+    def test_optimize_response_respects_discrete_bounds(self):
+        factors, _, results = self._discrete_fit()
+        opt = optimize_response(
+            anova_results=results,
+            factors=factors,
+            objective="maximize",
+            bounds={"D": (1.2, 1.2)},
+            seed=42,
+        )
+        assert opt.success
+        # Pinned bound to a single level must force that level.
+        assert opt.optimal_settings["D"] == 1.2
+
+    def test_optimize_desirability_snaps_discrete_to_declared_level(self):
+        factors, _, results = self._discrete_fit()
+        d = DesirabilityFunction(["Y"])
+        d.add_response("Y", "maximize", low=5, high=25)
+        dopt = optimize_desirability(
+            {"Y": results}, factors, d, seed=42
+        )
+        assert dopt.success
+        assert dopt.optimal_settings["D"] in (1.2, 1.8)

@@ -82,7 +82,7 @@ def parse_doe_csv(file_content: str) -> ParseResult:
         factors = extract_factor_definitions(lines)
         response_definitions = extract_response_definitions(lines)
         model_terms = extract_model_terms(lines)
-        design_data = extract_design_data(lines)
+        design_data = extract_design_data(lines, factors)
 
         return ParseResult(
             metadata=metadata,
@@ -450,7 +450,15 @@ def extract_model_terms(lines: List[str]) -> Dict[str, List[str]]:
 
         response_name, _, terms_str = content.partition(",")
         response_name = response_name.strip()
-        terms = [t.strip() for t in terms_str.split("|") if t.strip()]
+        # Excel re-saving can pad metadata lines with trailing commas. Those can
+        # get trapped inside the last pipe-delimited field (e.g. "Mud,,,,,"), so
+        # strip stray leading/trailing commas from each term — a comma is never
+        # a valid character in a patsy factor name or model term.
+        terms = [
+            t.strip().strip(',')
+            for t in terms_str.split("|")
+            if t.strip().strip(',')
+        ]
 
         if response_name and terms:
             model_terms[response_name] = terms
@@ -458,7 +466,10 @@ def extract_model_terms(lines: List[str]) -> Dict[str, List[str]]:
     return model_terms
 
 
-def extract_design_data(lines: List[str]) -> pd.DataFrame:
+def extract_design_data(
+    lines: List[str],
+    factors: Optional[List["Factor"]] = None
+) -> pd.DataFrame:
     """
     Extract design data section (after # DESIGN DATA).
 
@@ -466,6 +477,10 @@ def extract_design_data(lines: List[str]) -> pd.DataFrame:
     ----------
     lines : List[str]
         Raw CSV lines.
+    factors : Optional[List[Factor]]
+        Parsed factor definitions, used to protect categorical factor
+        columns from being coerced to numeric (e.g. categorical levels
+        that happen to be numeric-looking).
 
     Returns
     -------
@@ -508,18 +523,33 @@ def extract_design_data(lines: List[str]) -> pd.DataFrame:
     if design_data.empty:
         raise CSVParseError("DESIGN DATA section empty")
 
+    # Never coerce categorical factor columns to numeric. Categorical levels
+    # may be numeric-looking labels (e.g. batch/lot IDs) and must remain
+    # strings so patsy treats them as categorical in the ANOVA.
+    categorical_cols: set = set()
+    if factors:
+        categorical_cols = {
+            f.name for f in factors if f.factor_type == FactorType.CATEGORICAL
+        }
+
     # Convert numeric columns properly (handle % symbols and strings)
     for col in design_data.columns:
         # Skip metadata columns
         if col in ['StdOrder', 'RunOrder', 'Block', 'WholePlot', 'Phase']:
             continue
+        if col in categorical_cols:
+            continue
         
         # Try to convert to numeric, handling percentage symbols
         if design_data[col].dtype == object:
             try:
-                # Remove % symbols if present and convert
+                # Remove % symbols if present and convert. Only promote the
+                # column to numeric if every value parses; otherwise leave the
+                # original (e.g. a text/categorical column we don't know about).
                 cleaned = design_data[col].str.replace('%', '', regex=False)
-                design_data[col] = pd.to_numeric(cleaned, errors='ignore')
+                converted = pd.to_numeric(cleaned, errors='coerce')
+                if converted.notna().all():
+                    design_data[col] = converted
             except (AttributeError, ValueError):
                 # Not a string column or conversion failed - leave as is
                 pass
