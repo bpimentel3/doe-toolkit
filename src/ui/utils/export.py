@@ -671,11 +671,15 @@ def _build_profiler_section(
             f.name: profiler_settings.get(f.name, 0) for f in factors
         }
         encoded_base = encode_settings_dict(current_settings, factors)
-        import pandas as _pd
 
-        base_row = _pd.DataFrame([encoded_base])
+        # Predictions are computed via predict_from_settings (not the raw
+        # statsmodels fitted_model.predict) so that categorical factors are
+        # handled correctly — the fitted_model design matrix needs patsy dummy
+        # columns, and passing a raw categorical string yields NaN predictions.
         try:
-            current_pred = float(results.fitted_model.predict(base_row).iloc[0])
+            current_pred = float(
+                results.predict_from_settings(encoded_base)
+            )
         except Exception:
             current_pred = float("nan")
 
@@ -684,48 +688,102 @@ def _build_profiler_section(
             f"{current_pred:.4f}</strong></p>"
         )
 
-        # One trace plot per factor
+        # One trace/bar plot per factor
         parts.append('<div class="plot-row">')
         for factor in factors:
             try:
-                if factor.is_continuous():
-                    x_vals = np.linspace(factor.min_value, factor.max_value, 60)
-                else:
-                    x_vals = np.array(factor.levels, dtype=float)
+                if factor.is_categorical():
+                    # Bar chart: one bar per level, current level highlighted.
+                    levels = list(factor.levels)
+                    level_preds: List[float] = []
+                    for level in levels:
+                        settings_i = dict(current_settings)
+                        settings_i[factor.name] = level
+                        encoded_i = encode_settings_dict(settings_i, factors)
+                        try:
+                            level_preds.append(float(
+                                results.predict_from_settings(encoded_i)
+                            ))
+                        except Exception:
+                            level_preds.append(float("nan"))
 
-                y_preds: List[float] = []
-                for x in x_vals:
-                    settings_i = dict(current_settings)
-                    settings_i[factor.name] = x
-                    encoded_i = encode_settings_dict(settings_i, factors)
-                    row_i = _pd.DataFrame([encoded_i])
+                    current_level = current_settings.get(factor.name)
                     try:
-                        y_preds.append(float(results.fitted_model.predict(row_i).iloc[0]))
-                    except Exception:
-                        y_preds.append(float("nan"))
+                        current_idx = (
+                            levels.index(current_level) if current_level in levels
+                            else 0
+                        )
+                    except (ValueError, TypeError):
+                        current_idx = 0
+                    colors = [
+                        PLOT_COLORS["danger"] if i == current_idx
+                        else PLOT_COLORS["primary"]
+                        for i in range(len(levels))
+                    ]
 
-                fig = go.Figure()
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_vals,
-                        y=y_preds,
-                        mode="lines+markers" if not factor.is_continuous() else "lines",
-                        line=dict(color=PLOT_COLORS["primary"], width=2),
-                        marker=dict(size=8, color=PLOT_COLORS["primary"]),
+                    fig = go.Figure()
+                    fig.add_trace(
+                        go.Bar(
+                            x=[str(level) for level in levels],
+                            y=level_preds,
+                            marker=dict(
+                                color=colors, line=dict(color="#000000", width=1)
+                            ),
+                        )
                     )
-                )
-                # Mark current setting
-                fig.add_vline(
-                    x=float(current_settings[factor.name]),
-                    line=dict(color=PLOT_COLORS["danger"], dash="dash", width=1.5),
-                )
-                fig.update_layout(
-                    xaxis_title=factor.name,
-                    yaxis_title=response_name,
-                    height=280,
-                    title=f"Trace: {factor.name}",
-                    showlegend=False,
-                )
+                    fig.update_layout(
+                        xaxis_title=factor.name,
+                        yaxis_title=response_name,
+                        height=280,
+                        title=f"Trace: {factor.name}",
+                        showlegend=False,
+                    )
+                else:
+                    # Continuous or discrete numeric: line/marker trace.
+                    if factor.is_continuous():
+                        x_vals = np.linspace(
+                            factor.min_value, factor.max_value, 60
+                        )
+                    else:
+                        x_vals = np.array(factor.levels, dtype=float)
+
+                    y_preds: List[float] = []
+                    for x in x_vals:
+                        settings_i = dict(current_settings)
+                        settings_i[factor.name] = x
+                        encoded_i = encode_settings_dict(settings_i, factors)
+                        try:
+                            y_preds.append(float(
+                                results.predict_from_settings(encoded_i)
+                            ))
+                        except Exception:
+                            y_preds.append(float("nan"))
+
+                    fig = go.Figure()
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_vals,
+                            y=y_preds,
+                            mode="lines+markers"
+                            if not factor.is_continuous()
+                            else "lines",
+                            line=dict(color=PLOT_COLORS["primary"], width=2),
+                            marker=dict(size=8, color=PLOT_COLORS["primary"]),
+                        )
+                    )
+                    # Mark current setting
+                    fig.add_vline(
+                        x=float(current_settings[factor.name]),
+                        line=dict(color=PLOT_COLORS["danger"], dash="dash", width=1.5),
+                    )
+                    fig.update_layout(
+                        xaxis_title=factor.name,
+                        yaxis_title=response_name,
+                        height=280,
+                        title=f"Trace: {factor.name}",
+                        showlegend=False,
+                    )
+
                 fig = apply_plot_style(fig)
                 parts.append(
                     _plotly_div(
