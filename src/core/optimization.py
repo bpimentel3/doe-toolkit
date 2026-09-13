@@ -22,7 +22,7 @@ from typing import List, Dict, Optional, Union, Literal, Tuple, Callable
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize, LinearConstraint as ScipyLinearConstraint
+from scipy.optimize import minimize, differential_evolution, LinearConstraint as ScipyLinearConstraint
 
 from src.core.factors import Factor, FactorType
 from src.core.analysis import ANOVAResults
@@ -594,16 +594,16 @@ def desirability_maximize(
     weight: float = 1.0
 ) -> float:
     """
-    Desirability function for maximizing response.
+    Desirability function for maximizing response (Derringer & Suich, 1980).
     
     Parameters
     ----------
     y : float
         Response value
     low : float
-        Minimum acceptable value (d=0)
+        Worst acceptable value (d=0)
     high : float
-        Target value (d=1)
+        Ideal value (d=1); values at or above it are fully satisfactory
     weight : float, default=1.0
         Shape parameter (1=linear, >1=emphasize target, <1=more tolerant)
     
@@ -614,13 +614,14 @@ def desirability_maximize(
     
     Notes
     -----
-    Formula: d = ((y - low) / (high - low))^weight for low <= y <= high
-             d = 0 for y < low
-             d = 1 for y > high
+    Standard Derringer & Suich semantics:
+        d = ((y - low) / (high - low))^weight  for low <= y < high
+        d = 0                                   for y < low
+        d = 1                                   for y >= high  (saturates at ideal)
     """
     if y < low:
         return 0.0
-    elif y > high:
+    elif y >= high:
         return 1.0
     else:
         return ((y - low) / (high - low)) ** weight
@@ -633,16 +634,16 @@ def desirability_minimize(
     weight: float = 1.0
 ) -> float:
     """
-    Desirability function for minimizing response.
+    Desirability function for minimizing response (Derringer & Suich, 1980).
     
     Parameters
     ----------
     y : float
         Response value
     low : float
-        Target value (d=1)
+        Ideal value (d=1); values at or below it are fully satisfactory
     high : float
-        Maximum acceptable value (d=0)
+        Worst acceptable value (d=0)
     weight : float, default=1.0
         Shape parameter
     
@@ -653,11 +654,12 @@ def desirability_minimize(
     
     Notes
     -----
-    Formula: d = ((high - y) / (high - low))^weight for low <= y <= high
-             d = 1 for y < low
-             d = 0 for y > high
+    Standard Derringer & Suich semantics:
+        d = ((high - y) / (high - low))^weight  for low < y <= high
+        d = 1                                   for y <= low  (saturates at ideal)
+        d = 0                                   for y > high
     """
-    if y < low:
+    if y <= low:
         return 1.0
     elif y > high:
         return 0.0
@@ -983,6 +985,13 @@ def optimize_desirability(
         if response_name not in anova_results_dict:
             raise ValueError(f"No model provided for response: {response_name}")
     
+    # Guard against nothing to optimize (all responses set to "None")
+    if not desirability_func.response_names:
+        raise ValueError(
+            "No responses configured for desirability optimization. "
+            "Set at least one response to maximize, minimize, or target."
+        )
+    
     from src.core.coding import encode_design
     dims = _OptimizationDims(factors)
     # Merge nuisance columns across every fitted response model. All models
@@ -1065,42 +1074,34 @@ def optimize_desirability(
                 if is_int:
                     x0[i] = round(x0[i])
     
-    if not dims.has_categorical:
-        result = minimize(
-            objective_func,
-            x0=x0,
-            method='SLSQP',
-            bounds=bounds_list,
-            constraints=scipy_constraints,
-            options={'maxiter': 500, 'ftol': 1e-9}
+    # Always use global (gradient-free) solver for desirability optimization.
+    # Hard bounds create a discontinuous objective that gradient-based methods
+    # (SLSQP) cannot navigate — the numerical gradient vanishes in the flat
+    # d=0 region and the solver stalls at the starting point.
+    if scipy_constraints:
+        warnings.warn(
+            "Linear constraints are ignored for desirability optimization."
         )
-    else:
+    try:
+        result = differential_evolution(
+            objective_func,
+            bounds=bounds_list,
+            integrality=dims.integrality,
+            maxiter=500,
+            popsize=20,
+            seed=seed,
+            polish=False,
+        )
+    except Exception as exc:
+        warnings.warn(f"differential_evolution failed: {exc}")
         result = None
-        if scipy_constraints:
-            warnings.warn(
-                "Linear constraints are ignored for designs containing "
-                "categorical factors."
-            )
-        try:
-            from scipy.optimize import differential_evolution
-            result = differential_evolution(
-                objective_func,
-                bounds=bounds_list,
-                integrality=dims.integrality,
-                maxiter=500,
-                popsize=20,
-                seed=seed,
-                polish=False,
-            )
-        except Exception as exc:
-            warnings.warn(f"differential_evolution failed: {exc}")
 
-        if result is None or not result.success:
-            warnings.warn(
-                "Global categorical optimizer did not converge; enumerating "
-                "categorical level combinations instead."
-            )
-            result = _enumerate_categorical_best(objective_func, dims)
+    if result is None or not result.success:
+        warnings.warn(
+            "Global optimizer did not converge; enumerating "
+            "categorical level combinations instead."
+        )
+        result = _enumerate_categorical_best(objective_func, dims)
     
     # Extract optimal settings (numeric floats; categorical level labels).
     x_opt = result.x
@@ -1118,8 +1119,10 @@ def optimize_desirability(
         y_pred = model.predict(pred_df)[0]
         predicted_responses[response_name] = y_pred
         
-        d_i = desirability_func.evaluate_individual(response_name, y_pred)
-        individual_desirabilities[response_name] = d_i
+        # Only evaluate desirability for configured responses
+        if response_name in desirability_func.response_configs:
+            d_i = desirability_func.evaluate_individual(response_name, y_pred)
+            individual_desirabilities[response_name] = d_i
     
     overall_D = desirability_func.evaluate(predicted_responses)
     
