@@ -1746,3 +1746,150 @@ def create_interaction_plot(
     fig.update_traces(connectgaps=False)
 
     return apply_plot_style(fig)
+
+
+def box_plot_stats(
+    factor_name: str,
+    design: pd.DataFrame,
+    response: np.ndarray,
+    is_categorical: bool,
+) -> pd.DataFrame:
+    """
+    Aggregate per-level response statistics for a box plot.
+
+    One row is returned per observed level of ``factor_name``.  Boxes are
+    drawn from the raw response values, so the Quartile/Min/Q1/Median/Q3/Max
+    summary is derived from the observed data rather than adjusted means.
+
+    Rows with a missing (NaN) response are dropped; factor levels that are
+    absent from the data produce no row at all (present levels only).
+
+    Parameters
+    ----------
+    factor_name : str
+        Name of the x-axis factor column.
+    design : pd.DataFrame
+        Design data (natural units) containing ``factor_name``.
+    response : np.ndarray
+        Response values aligned with ``design`` rows.
+    is_categorical : bool
+        Whether the factor is categorical.  Controls level ordering (see
+        :func:`_sorted_levels`); categorical levels are never coerced to
+        numbers.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ``[factor_name, mean, std, n]`` ordered by level, plus
+        ``level`` holding the stable sorted level string used for plotting.
+    """
+    df = pd.DataFrame({
+        factor_name: np.asarray(design[factor_name].values),
+        'response': np.asarray(response, dtype=float),
+    })
+    # Missing responses are excluded.
+    df = df.dropna(subset=['response'])
+
+    ordered = _sorted_levels(df[factor_name].values, is_categorical)
+
+    rows = []
+    for level in ordered:
+        vals = df[df[factor_name].map(lambda v: str(v)) == str(level)]['response']
+        if vals.empty:
+            continue
+        vals = vals.astype(float).values
+        rows.append({
+            factor_name: level,
+            'level': str(level),
+            'n': int(len(vals)),
+            'mean': float(vals.mean()),
+            'std': float(vals.std(ddof=1)) if len(vals) > 1 else 0.0,
+        })
+
+    result = pd.DataFrame(rows, columns=[
+        factor_name, 'level', 'n', 'mean', 'std'
+    ])
+    return result
+
+
+def create_box_plot(
+    stats: pd.DataFrame,
+    factor_name: str,
+    factor_label: str,
+    response_name: str,
+    response_values_by_level: Dict[str, np.ndarray],
+    response_units: Optional[str] = None,
+    factor_units: Optional[str] = None,
+) -> go.Figure:
+    """
+    Create an IQR/Tukey box plot of the response for each factor level.
+
+    One ``go.Box`` trace is drawn per factor level and the raw response values
+    are used directly, so Plotly computes the whisker/outlier range (Q1-1.5
+    IQR, Q3+1.5 IQR) from the observed responses.  Boxes are drawn unfilled
+    (transparent body) with all-black outlines, whiskers, median line and
+    outlier markers, matching the standard industry convention for a
+    single-factor box plot.  The x-axis is a category axis keyed on the
+    factor level labels.
+
+    Parameters
+    ----------
+    stats : pd.DataFrame
+        Output of :func:`box_plot_stats`.
+    factor_name : str
+        Name of the factor column (used for tooltips).
+    factor_label : str
+        Display label for the factor (the natural name).
+    response_name : str
+        Display name of the response for the y-axis/tooltip.
+    response_values_by_level : Dict[str, np.ndarray]
+        Mapping from each level string to its raw (NaN-free) response values.
+        Keys must be the same level strings as ``stats['level']``.
+    response_units : str, optional
+        Units appended to the response axis label.
+    factor_units : str, optional
+        Units appended to the factor axis label.
+
+    Returns
+    -------
+    go.Figure
+        The box plot.
+    """
+    factor_axis_label = _label_with_units(factor_label, factor_units)
+    response_label = _label_with_units(response_name, response_units)
+
+    fig = go.Figure()
+
+    for level in stats['level']:
+        values = np.asarray(response_values_by_level[level], dtype=float)
+        n = stats.loc[stats['level'] == level, 'n'].iloc[0]
+        fig.add_trace(
+            go.Box(
+                y=values,
+                name=level,
+                boxpoints="outliers",
+                fillcolor="rgba(0,0,0,0)",
+                line=dict(color="#000000", width=1),
+                marker=dict(color="#000000", size=5),
+                hoveron="boxes",
+                hovertemplate=(
+                    f"{factor_name}: {level}<br>"
+                    f"{response_name}: %{{y:.3f}}<br>"
+                    f"n: {n}<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"{response_label}  |  {factor_label}",
+            font=dict(size=14),
+        ),
+        xaxis_title=factor_axis_label,
+        yaxis_title=response_label,
+        xaxis_type="category",
+        showlegend=False,
+        height=480,
+        hovermode="closest",
+    )
+    return apply_plot_style(fig)

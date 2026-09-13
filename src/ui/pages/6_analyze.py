@@ -40,6 +40,7 @@ from src.ui.components.diagnostics_display import display_diagnostics_tab
 from src.ui.components.lof_testing import display_lack_of_fit_test
 from src.ui.components.profiler_display import display_profiler_tab
 from src.ui.components.interaction_display import display_interaction_plot_tab
+from src.ui.components.box_plot_display import display_box_plot_tab
 from src.core.analysis import ANOVAAnalysis, generate_model_terms  # noqa: E402
 
 
@@ -345,9 +346,10 @@ _response_units_map = {
 _factor_units_map = {f.name: f.units for f in factors}
 current_response_units = _response_units_map.get(selected_response)
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Model Fit", "📉 Effects & Residuals",
-    "🔍 Design Diagnostics", "📈 Profiler", "🕸️ Interaction Plots"
+    "🔍 Design Diagnostics", "📈 Profiler", "🕸️ Interaction Plots",
+    "📦 Box Plots"
 ])
 
 with tab1:
@@ -757,6 +759,14 @@ with tab5:
         response=response_filtered,
         factors=factors,
         results=interaction_results,
+        response_units=current_response_units,
+    )
+with tab6:
+    display_box_plot_tab(
+        selected_response=selected_response,
+        design=design_filtered,
+        response=response_filtered,
+        factors=factors,
         response_units=current_response_units,
     )
 st.divider()
