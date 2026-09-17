@@ -35,15 +35,17 @@ conda install conda-pack
 
 ### Option A: PowerShell (recommended)
 ```powershell
-cd "C:\Users\Brian Pimentel\Documents\Projects\doe-toolkit"
+cd <path-to-repo>\doe-toolkit
 .\build.ps1
 ```
 
 ### Option B: Command Prompt
 ```cmd
-cd "C:\Users\Brian Pimentel\Documents\Projects\doe-toolkit"
+cd <path-to-repo>\doe-toolkit
 build.bat
 ```
+
+Replace `<path-to-repo>` with the folder where you cloned the repository.
 
 Both scripts do the same thing. Build time is **3-8 minutes** on first run
 (conda-pack compresses ~500 MB of dependencies).
@@ -126,6 +128,12 @@ recursive spawn issue that PyInstaller had.
 conda env list   # verify doe-toolkit exists
 conda activate doe-toolkit
 conda env list   # should show * next to doe-toolkit
+```
+
+If the environment exists but conda still can't find it by name, set an
+absolute path override at the top of `build.ps1`:
+```powershell
+$EnvPath = "C:\full\path\to\your\envs\doe-toolkit"
 ```
 
 ### tar extraction fails

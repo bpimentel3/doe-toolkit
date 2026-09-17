@@ -12,7 +12,10 @@
 $ErrorActionPreference = "Stop"
 
 $EnvName   = "doe-toolkit"
-$EnvPath   = "C:\Users\Brian Pimentel\anaconda3\envs\doe-toolkit"
+# OPTIONAL: absolute path to the doe-toolkit conda environment.
+# Leave as $null normally — the environment is located by name on any machine.
+# Set this only if conda cannot find the environment by name here.
+$EnvPath   = $null
 $OutputDir = "dist\DOE-Toolkit"
 $PackFile  = "dist\doe-toolkit-env.tar.gz"
 
@@ -43,14 +46,23 @@ Write-Host "[2/5] Packing conda environment '$EnvName'..." -ForegroundColor Yell
 Write-Host "      This takes 3-8 minutes on first run." -ForegroundColor Gray
 Write-Host ""
 
-conda-pack -p $EnvPath -o $PackFile --ignore-missing-files
+# Locate the environment by name first (works on any machine).
+conda-pack -n $EnvName -o $PackFile --ignore-missing-files
+
+# Fallback: if the name lookup failed, retry with an explicitly
+# configured absolute path (set $EnvPath at the top of this script).
+if ($LASTEXITCODE -ne 0 -and $EnvPath -and (Test-Path $EnvPath)) {
+    Write-Host "      Environment '$EnvName' not found by name; retrying with configured path..." -ForegroundColor Yellow
+    conda-pack -p $EnvPath -o $PackFile --ignore-missing-files
+}
+
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "ERROR: conda-pack failed." -ForegroundColor Red
-    Write-Host "Check that this path exists:" -ForegroundColor Yellow
-    Write-Host "  $EnvPath" -ForegroundColor Gray
+    Write-Host "The '$EnvName' environment could not be found. Verify it exists:" -ForegroundColor Yellow
+    Write-Host "  conda env list" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "If the path is wrong, edit `$EnvPath at the top of this script." -ForegroundColor Yellow
+    Write-Host "If the environment lives in a non-standard location, set `$EnvPath at the top of this script." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "If conda-pack is not installed in base:" -ForegroundColor Yellow
     Write-Host "  conda install conda-pack" -ForegroundColor Gray
