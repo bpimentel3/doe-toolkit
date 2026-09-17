@@ -32,8 +32,11 @@ mkdir "%OUTPUT_DIR%"
 echo       Done.
 echo.
 
-REM === Step 2: Pack the conda environment ===
+REM === Step 2: Verify conda-pack, then pack the conda environment ===
 echo [2/6] Packing conda environment "%ENV_NAME%"...
+echo       Checking conda-pack version (0.9.2+ required)...
+python "%~dp0tools\check_conda_pack.py"
+if errorlevel 1 goto :pack_version_failed
 echo       This takes 3-8 minutes on first run.
 echo.
 conda-pack -n "%ENV_NAME%" -o "%PACK_FILE%" --ignore-missing-files
@@ -82,6 +85,13 @@ echo       WARNING: THIRD_PARTY_NOTICES.txt not generated.
 echo       Done.
 echo.
 
+REM === Validate the packed environment ===
+echo [6/6] Validating packed environment...
+"%OUTPUT_DIR%\env\python.exe" -c "import streamlit.watcher.util as u; assert u._WINDOWS_EXTENDED_PATH_PREFIX == '\\\\?\\', 'streamlit util.py corrupted during packaging'"
+if errorlevel 1 goto :verify_failed
+echo       Packed environment OK.
+echo.
+
 REM === Clean up the intermediate tar file ===
 del "%PACK_FILE%"
 
@@ -120,6 +130,25 @@ echo   conda env list
 echo.
 echo If conda-pack is not installed in base:
 echo   conda install conda-pack
+pause
+exit /b 1
+
+:pack_version_failed
+echo ERROR: conda-pack too old or missing.
+echo This build requires conda-pack 0.9.2+.
+echo Older versions corrupt Python source files in the packaged
+echo environment on Windows (streamlit breaks on launch).
+echo.
+echo Upgrade with:
+echo   conda install -n base -c conda-forge conda-pack=0.9.2 --freeze-installed
+pause
+exit /b 1
+
+:verify_failed
+echo ERROR: packed environment validation failed.
+echo streamlit was corrupted during packaging - the known conda-pack
+echo prefix-rewrite bug on Windows. Ensure conda-pack is 0.9.2+ in base,
+echo then rebuild.
 pause
 exit /b 1
 

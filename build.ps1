@@ -43,6 +43,20 @@ Write-Host ""
 
 # ── Step 2: Pack the conda environment ────────────────────────────────
 Write-Host "[2/6] Packing conda environment '$EnvName'..." -ForegroundColor Yellow
+Write-Host "      Checking conda-pack version (0.9.2+ required)..." -ForegroundColor Gray
+python "$PSScriptRoot\tools\check_conda_pack.py"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "ERROR: conda-pack too old or missing." -ForegroundColor Red
+    Write-Host "This build requires conda-pack 0.9.2+." -ForegroundColor Yellow
+    Write-Host "Older versions corrupt Python source files in the packaged" -ForegroundColor Yellow
+    Write-Host "environment on Windows (streamlit breaks on launch)." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Upgrade with:" -ForegroundColor Yellow
+    Write-Host "  conda install -n base -c conda-forge conda-pack=0.9.2 --freeze-installed" -ForegroundColor Gray
+    Read-Host "Press Enter to exit"
+    exit 1
+}
 Write-Host "      This takes 3-8 minutes on first run." -ForegroundColor Gray
 Write-Host ""
 
@@ -138,6 +152,19 @@ if (Test-Path "$OutputDir\env") {
     }
 }
 Write-Host "      Done." -ForegroundColor Green
+Write-Host ""
+
+Write-Host "      Validating packed environment..." -ForegroundColor Gray
+& "$OutputDir\env\python.exe" -c "import streamlit.watcher.util as u; assert u._WINDOWS_EXTENDED_PATH_PREFIX == '\\\\?\\', 'streamlit util.py corrupted during packaging'"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "ERROR: packed environment validation failed." -ForegroundColor Red
+    Write-Host "streamlit was corrupted during packaging (conda-pack prefix-rewrite" -ForegroundColor Yellow
+    Write-Host "bug on Windows). Ensure conda-pack is 0.9.2+ in base, then rebuild." -ForegroundColor Yellow
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+Write-Host "      Packed environment OK." -ForegroundColor Green
 Write-Host ""
 
 # ── Clean up intermediate tar ─────────────────────────────────────────
