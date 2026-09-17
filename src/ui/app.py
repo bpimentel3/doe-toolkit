@@ -58,7 +58,7 @@ with st.sidebar:
         - Response Optimization
         
         **License:** MIT  
-        **Version:** 0.1.0 (MVP)
+        **Version:** 0.2.0
         """)
     
     with st.expander("🆘 Get Help"):
