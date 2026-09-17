@@ -15,19 +15,24 @@ spawn bug when used with Streamlit.
 
 - Anaconda or Miniconda installed
 - `doe-toolkit` conda environment with all dependencies
-- `conda-pack` installed in the **base** environment
+- `conda-pack` **0.9.2 or newer** in the **base** environment (older versions corrupt
+  Python source files in the packed environment on Windows — see troubleshooting)
 
 Verify:
 ```powershell
 conda activate base
 conda list | Select-String conda-pack
-# Should show: conda-pack  0.8.x  ...
+# Should show: conda-pack  0.9.2  ...  conda-forge
 ```
 
-If missing:
+0.9.2 is only on `conda-forge` (the `defaults` channel tops out at 0.9.1, which
+still has the corrupting bug). Install/upgrade with:
 ```powershell
-conda install conda-pack
+conda install -n base -c conda-forge conda-pack=0.9.2 --freeze-installed
 ```
+
+The build scripts fail fast with a clear message if the version is too old, and also
+validate the packed environment (streamlit integrity) as the last step.
 
 ---
 
@@ -35,15 +40,17 @@ conda install conda-pack
 
 ### Option A: PowerShell (recommended)
 ```powershell
-cd "C:\Users\Brian Pimentel\Documents\Projects\doe-toolkit"
+cd <path-to-repo>\doe-toolkit
 .\build.ps1
 ```
 
 ### Option B: Command Prompt
 ```cmd
-cd "C:\Users\Brian Pimentel\Documents\Projects\doe-toolkit"
+cd <path-to-repo>\doe-toolkit
 build.bat
 ```
+
+Replace `<path-to-repo>` with the folder where you cloned the repository.
 
 Both scripts do the same thing. Build time is **3-8 minutes** on first run
 (conda-pack compresses ~500 MB of dependencies).
@@ -61,11 +68,19 @@ dist\DOE-Toolkit\
 ├── env\                ← bundled Python + all dependencies
 │   └── Scripts\
 │       └── streamlit.exe
+├── THIRD_PARTY_NOTICES.txt  ← license map of every bundled package (auto-generated)
 ├── LICENSE.txt
 └── QUICKSTART.md
 ```
 
 Total size: ~500-700 MB uncompressed, ~150 MB zipped.
+
+The build runs `tools/license_audit.py` against the packed environment and
+writes `THIRD_PARTY_NOTICES.txt` so each redistributed package's license and
+origin travel with the app. To inspect before shipping:
+```powershell
+python tools\license_audit.py --env dist\DOE-Toolkit\env
+```
 
 ---
 
@@ -128,6 +143,12 @@ conda activate doe-toolkit
 conda env list   # should show * next to doe-toolkit
 ```
 
+If the environment exists but conda still can't find it by name, set an
+absolute path override at the top of `build.ps1`:
+```powershell
+$EnvPath = "C:\full\path\to\your\envs\doe-toolkit"
+```
+
 ### tar extraction fails
 `tar` ships with Windows 10 build 17063 and later.
 ```powershell
@@ -143,6 +164,17 @@ Streamlit opens the browser automatically. If it doesn't:
 Check that `src\` was copied correctly into `dist\DOE-Toolkit\`:
 ```powershell
 ls dist\DOE-Toolkit\src\ui\app.py   # should exist
+```
+
+### "conda-pack too old" or validation fails
+conda-pack ≤ 0.9.1 mangles Python source files during unpack on Windows: its
+prefix rewriting strips the extended-path sequence `\\?\` from pip-installed
+source files (e.g. Streamlit's `watcher/util.py`), producing
+`SyntaxError: unterminated string literal` on launch.
+
+Fix: make sure base has conda-pack 0.9.2+ from conda-forge, then rebuild.
+```powershell
+conda install -n base -c conda-forge conda-pack=0.9.2 --freeze-installed
 ```
 
 ---

@@ -12,7 +12,10 @@
 $ErrorActionPreference = "Stop"
 
 $EnvName   = "doe-toolkit"
-$EnvPath   = "C:\Users\Brian Pimentel\anaconda3\envs\doe-toolkit"
+# OPTIONAL: absolute path to the doe-toolkit conda environment.
+# Leave as $null normally — the environment is located by name on any machine.
+# Set this only if conda cannot find the environment by name here.
+$EnvPath   = $null
 $OutputDir = "dist\DOE-Toolkit"
 $PackFile  = "dist\doe-toolkit-env.tar.gz"
 
@@ -22,7 +25,7 @@ Write-Host "============================================================" -Foreg
 Write-Host ""
 
 # ── Step 1: Clean previous build ──────────────────────────────────────
-Write-Host "[1/5] Cleaning previous build..." -ForegroundColor Yellow
+Write-Host "[1/6] Cleaning previous build..." -ForegroundColor Yellow
 if (Test-Path "dist") {
     try {
         Remove-Item -Recurse -Force "dist" -ErrorAction Stop
@@ -39,18 +42,41 @@ Write-Host "      Done." -ForegroundColor Green
 Write-Host ""
 
 # ── Step 2: Pack the conda environment ────────────────────────────────
-Write-Host "[2/5] Packing conda environment '$EnvName'..." -ForegroundColor Yellow
+Write-Host "[2/6] Packing conda environment '$EnvName'..." -ForegroundColor Yellow
+Write-Host "      Checking conda-pack version (0.9.2+ required)..." -ForegroundColor Gray
+python "$PSScriptRoot\tools\check_conda_pack.py"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "ERROR: conda-pack too old or missing." -ForegroundColor Red
+    Write-Host "This build requires conda-pack 0.9.2+." -ForegroundColor Yellow
+    Write-Host "Older versions corrupt Python source files in the packaged" -ForegroundColor Yellow
+    Write-Host "environment on Windows (streamlit breaks on launch)." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Upgrade with:" -ForegroundColor Yellow
+    Write-Host "  conda install -n base -c conda-forge conda-pack=0.9.2 --freeze-installed" -ForegroundColor Gray
+    Read-Host "Press Enter to exit"
+    exit 1
+}
 Write-Host "      This takes 3-8 minutes on first run." -ForegroundColor Gray
 Write-Host ""
 
-conda-pack -p $EnvPath -o $PackFile --ignore-missing-files
+# Locate the environment by name first (works on any machine).
+conda-pack -n $EnvName -o $PackFile --ignore-missing-files
+
+# Fallback: if the name lookup failed, retry with an explicitly
+# configured absolute path (set $EnvPath at the top of this script).
+if ($LASTEXITCODE -ne 0 -and $EnvPath -and (Test-Path $EnvPath)) {
+    Write-Host "      Environment '$EnvName' not found by name; retrying with configured path..." -ForegroundColor Yellow
+    conda-pack -p $EnvPath -o $PackFile --ignore-missing-files
+}
+
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "ERROR: conda-pack failed." -ForegroundColor Red
-    Write-Host "Check that this path exists:" -ForegroundColor Yellow
-    Write-Host "  $EnvPath" -ForegroundColor Gray
+    Write-Host "The '$EnvName' environment could not be found. Verify it exists:" -ForegroundColor Yellow
+    Write-Host "  conda env list" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "If the path is wrong, edit `$EnvPath at the top of this script." -ForegroundColor Yellow
+    Write-Host "If the environment lives in a non-standard location, set `$EnvPath at the top of this script." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "If conda-pack is not installed in base:" -ForegroundColor Yellow
     Write-Host "  conda install conda-pack" -ForegroundColor Gray
@@ -62,7 +88,7 @@ Write-Host "      Pack complete." -ForegroundColor Green
 Write-Host ""
 
 # ── Step 3: Extract the environment ───────────────────────────────────
-Write-Host "[3/5] Extracting environment into $OutputDir\env ..." -ForegroundColor Yellow
+Write-Host "[3/6] Extracting environment into $OutputDir\env ..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Path "$OutputDir\env" | Out-Null
 
 tar -xzf $PackFile -C "$OutputDir\env"
@@ -76,7 +102,7 @@ Write-Host "      Extraction complete." -ForegroundColor Green
 Write-Host ""
 
 # ── Step 4: Unpack (fix shebangs/paths inside the env) ────────────────
-Write-Host "[4/5] Finalising environment..." -ForegroundColor Yellow
+Write-Host "[4/6] Finalising environment..." -ForegroundColor Yellow
 & "$OutputDir\env\Scripts\conda-unpack.exe"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "      WARNING: conda-unpack returned an error. Continuing anyway." -ForegroundColor Yellow
@@ -86,7 +112,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 
 # ── Step 5: Copy application source and launcher ──────────────────────
-Write-Host "[5/5] Copying application files..." -ForegroundColor Yellow
+Write-Host "[5/6] Copying application files..." -ForegroundColor Yellow
 
 # Source code
 Copy-Item -Recurse -Force "src" "$OutputDir\src"
@@ -109,6 +135,36 @@ foreach ($doc in @("LICENSE.txt", "QUICKSTART.md")) {
 }
 
 Write-Host "      Done." -ForegroundColor Green
+Write-Host ""
+
+# ── Step 6: Generate third-party license notices ──────────────────────
+Write-Host "[6/6] Generating third-party license notices..." -ForegroundColor Yellow
+
+if (Test-Path "$OutputDir\env") {
+    python "$PSScriptRoot\tools\license_audit.py" --env "$OutputDir\env" --emit-notices
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "      WARNING: license audit flagged components; continuing build." -ForegroundColor Yellow
+    }
+    if (Test-Path "$OutputDir\env\THIRD_PARTY_NOTICES.txt") {
+        Copy-Item -Force "$OutputDir\env\THIRD_PARTY_NOTICES.txt" "$OutputDir\THIRD_PARTY_NOTICES.txt"
+    } else {
+        Write-Host "      WARNING: THIRD_PARTY_NOTICES.txt not generated." -ForegroundColor Yellow
+    }
+}
+Write-Host "      Done." -ForegroundColor Green
+Write-Host ""
+
+Write-Host "      Validating packed environment..." -ForegroundColor Gray
+& "$OutputDir\env\python.exe" -c "import streamlit.watcher.util as u; assert u._WINDOWS_EXTENDED_PATH_PREFIX == '\\\\?\\', 'streamlit util.py corrupted during packaging'"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "ERROR: packed environment validation failed." -ForegroundColor Red
+    Write-Host "streamlit was corrupted during packaging (conda-pack prefix-rewrite" -ForegroundColor Yellow
+    Write-Host "bug on Windows). Ensure conda-pack is 0.9.2+ in base, then rebuild." -ForegroundColor Yellow
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+Write-Host "      Packed environment OK." -ForegroundColor Green
 Write-Host ""
 
 # ── Clean up intermediate tar ─────────────────────────────────────────
