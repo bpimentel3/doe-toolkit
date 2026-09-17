@@ -38,7 +38,7 @@ echo       Done.
 echo.
 
 REM ── Step 2: Pack the conda environment ────────────────────────
-echo [2/5] Packing conda environment "%ENV_NAME%"...
+echo [2/6] Packing conda environment "%ENV_NAME%"...
 echo       This takes 3-8 minutes on first run.
 echo.
 conda-pack -n %ENV_NAME% -o "%PACK_FILE%" --ignore-missing-files
@@ -58,7 +58,7 @@ echo       Pack complete.
 echo.
 
 REM ── Step 3: Extract the environment into the output folder ─────
-echo [3/5] Extracting environment into %OUTPUT_DIR%\env ...
+echo [3/6] Extracting environment into %OUTPUT_DIR%\env ...
 mkdir "%OUTPUT_DIR%\env"
 tar -xzf "%PACK_FILE%" -C "%OUTPUT_DIR%\env"
 if errorlevel 1 (
@@ -71,7 +71,7 @@ echo       Extraction complete.
 echo.
 
 REM ── Step 4: Unpack the conda environment (fixes shebangs etc.) ─
-echo [4/5] Finalising environment...
+echo [4/6] Finalising environment...
 "%OUTPUT_DIR%\env\Scripts\conda-unpack.exe"
 if errorlevel 1 (
     echo WARNING: conda-unpack returned an error. Continuing anyway.
@@ -80,7 +80,7 @@ echo       Done.
 echo.
 
 REM ── Step 5: Copy application source and launcher ──────────────
-echo [5/5] Copying application files...
+echo [5/6] Copying application files...
 
 REM Copy source code
 xcopy /e /i /q src "%OUTPUT_DIR%\src"
@@ -97,6 +97,22 @@ REM Copy supporting docs
 if exist LICENSE.txt   copy LICENSE.txt   "%OUTPUT_DIR%\LICENSE.txt"
 if exist QUICKSTART.md copy QUICKSTART.md "%OUTPUT_DIR%\QUICKSTART.md"
 
+echo       Done.
+echo.
+
+REM ── Step 6: Generate third-party license notices ──────────────
+echo [6/6] Generating third-party license notices...
+if exist "%OUTPUT_DIR%\env" (
+    python "%~dp0tools\license_audit.py" --env "%OUTPUT_DIR%\env" --emit-notices
+    if errorlevel 1 (
+        echo       WARNING: license audit flagged components; continuing build.
+    )
+    if exist "%OUTPUT_DIR%\env\THIRD_PARTY_NOTICES.txt" (
+        copy /y "%OUTPUT_DIR%\env\THIRD_PARTY_NOTICES.txt" "%OUTPUT_DIR%\THIRD_PARTY_NOTICES.txt" >nul
+    ) else (
+        echo       WARNING: THIRD_PARTY_NOTICES.txt not generated.
+    )
+)
 echo       Done.
 echo.
 

@@ -25,7 +25,7 @@ Write-Host "============================================================" -Foreg
 Write-Host ""
 
 # ── Step 1: Clean previous build ──────────────────────────────────────
-Write-Host "[1/5] Cleaning previous build..." -ForegroundColor Yellow
+Write-Host "[1/6] Cleaning previous build..." -ForegroundColor Yellow
 if (Test-Path "dist") {
     try {
         Remove-Item -Recurse -Force "dist" -ErrorAction Stop
@@ -42,7 +42,7 @@ Write-Host "      Done." -ForegroundColor Green
 Write-Host ""
 
 # ── Step 2: Pack the conda environment ────────────────────────────────
-Write-Host "[2/5] Packing conda environment '$EnvName'..." -ForegroundColor Yellow
+Write-Host "[2/6] Packing conda environment '$EnvName'..." -ForegroundColor Yellow
 Write-Host "      This takes 3-8 minutes on first run." -ForegroundColor Gray
 Write-Host ""
 
@@ -74,7 +74,7 @@ Write-Host "      Pack complete." -ForegroundColor Green
 Write-Host ""
 
 # ── Step 3: Extract the environment ───────────────────────────────────
-Write-Host "[3/5] Extracting environment into $OutputDir\env ..." -ForegroundColor Yellow
+Write-Host "[3/6] Extracting environment into $OutputDir\env ..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Path "$OutputDir\env" | Out-Null
 
 tar -xzf $PackFile -C "$OutputDir\env"
@@ -88,7 +88,7 @@ Write-Host "      Extraction complete." -ForegroundColor Green
 Write-Host ""
 
 # ── Step 4: Unpack (fix shebangs/paths inside the env) ────────────────
-Write-Host "[4/5] Finalising environment..." -ForegroundColor Yellow
+Write-Host "[4/6] Finalising environment..." -ForegroundColor Yellow
 & "$OutputDir\env\Scripts\conda-unpack.exe"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "      WARNING: conda-unpack returned an error. Continuing anyway." -ForegroundColor Yellow
@@ -98,7 +98,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 
 # ── Step 5: Copy application source and launcher ──────────────────────
-Write-Host "[5/5] Copying application files..." -ForegroundColor Yellow
+Write-Host "[5/6] Copying application files..." -ForegroundColor Yellow
 
 # Source code
 Copy-Item -Recurse -Force "src" "$OutputDir\src"
@@ -120,6 +120,23 @@ foreach ($doc in @("LICENSE.txt", "QUICKSTART.md")) {
     if (Test-Path $doc) { Copy-Item -Force $doc "$OutputDir\$doc" }
 }
 
+Write-Host "      Done." -ForegroundColor Green
+Write-Host ""
+
+# ── Step 6: Generate third-party license notices ──────────────────────
+Write-Host "[6/6] Generating third-party license notices..." -ForegroundColor Yellow
+
+if (Test-Path "$OutputDir\env") {
+    python "$PSScriptRoot\tools\license_audit.py" --env "$OutputDir\env" --emit-notices
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "      WARNING: license audit flagged components; continuing build." -ForegroundColor Yellow
+    }
+    if (Test-Path "$OutputDir\env\THIRD_PARTY_NOTICES.txt") {
+        Copy-Item -Force "$OutputDir\env\THIRD_PARTY_NOTICES.txt" "$OutputDir\THIRD_PARTY_NOTICES.txt"
+    } else {
+        Write-Host "      WARNING: THIRD_PARTY_NOTICES.txt not generated." -ForegroundColor Yellow
+    }
+}
 Write-Host "      Done." -ForegroundColor Green
 Write-Host ""
 

@@ -63,11 +63,19 @@ dist\DOE-Toolkit\
 ├── env\                ← bundled Python + all dependencies
 │   └── Scripts\
 │       └── streamlit.exe
+├── THIRD_PARTY_NOTICES.txt  ← license map of every bundled package (auto-generated)
 ├── LICENSE.txt
 └── QUICKSTART.md
 ```
 
 Total size: ~500-700 MB uncompressed, ~150 MB zipped.
+
+The build runs `tools/license_audit.py` against the packed environment and
+writes `THIRD_PARTY_NOTICES.txt` so each redistributed package's license and
+origin travel with the app. To inspect before shipping:
+```powershell
+python tools\license_audit.py --env dist\DOE-Toolkit\env
+```
 
 ---
 
