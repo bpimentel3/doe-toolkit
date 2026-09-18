@@ -1281,6 +1281,68 @@ def create_categorical_response_plot(
     return apply_plot_style(fig)
 
 
+def build_surface_mesh(
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    x_factor: str,
+    y_factor: str,
+    base_settings: Dict,
+    predictor,
+) -> np.ndarray:
+    """
+    Build a 2D response mesh oriented for plotly `go.Contour` / `go.Surface`.
+
+    Returns `Z` of shape `(len(y_grid), len(x_grid))` where
+    `Z[j, i]` is the predicted response at the factor pair
+    `(x = x_grid[i], y = y_grid[j])`. Plotly interprets the first index of a
+    mesh as the Y axis (rows) and the second as the X axis (columns); building
+    the mesh in y-outer/x-inner order keeps axes consistent with the supplied
+    grids, so a plot rendered with ``x=x_grid, y=y_grid, z=Z`` is not
+    transposed.
+
+    Parameters
+    ----------
+    x_grid : np.ndarray
+        1D values for the X-axis factor.
+    y_grid : np.ndarray
+        1D values for the Y-axis factor.
+    x_factor : str
+        Name of the X-axis factor (key used in the settings dict).
+    y_factor : str
+        Name of the Y-axis factor (key used in the settings dict).
+    base_settings : dict
+        Settings for all factors held constant; a copy is made per grid
+        point, with `x_factor` and `y_factor` overwritten from the grid.
+    predictor : callable
+        Function taking a full settings dict and returning the predicted
+        response (scalar).
+
+    Returns
+    -------
+    np.ndarray
+        Response mesh of shape `(len(y_grid), len(x_grid))`.
+    """
+    x_min, x_max = x_grid.min(), x_grid.max()
+    if x_grid.ndim != 1 or y_grid.ndim != 1:
+        raise ValueError("x_grid and y_grid must be 1-dimensional")
+    n_x, n_y = len(x_grid), len(y_grid)
+    if n_x == 0 or n_y == 0:
+        raise ValueError("x_grid and y_grid must be non-empty")
+    if x_min == x_max or y_grid.min() == y_grid.max():
+        raise ValueError("x_grid and y_grid must each span more than one value")
+
+    X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
+
+    Z = np.empty((n_y, n_x), dtype=float)
+    for j in range(n_y):
+        for i in range(n_x):
+            point = base_settings.copy()
+            point[x_factor] = X_mesh[j, i]
+            point[y_factor] = Y_mesh[j, i]
+            Z[j, i] = predictor(point)
+    return Z
+
+
 def create_contour_plot(
     x_grid: np.ndarray,
     y_grid: np.ndarray,
