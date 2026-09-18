@@ -17,7 +17,12 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.ui.utils.plotting import PLOT_COLORS, apply_plot_style, _label_with_units
+from src.ui.utils.plotting import (
+    PLOT_COLORS,
+    apply_plot_style,
+    build_surface_mesh,
+    _label_with_units,
+)
 from src.core.coding import encode_settings_dict
 
 
@@ -482,23 +487,17 @@ def _generate_contour_mesh(factors, x_factor, y_factor, results):
 
         x_grid = np.linspace(x_min, x_max, 50)
         y_grid = np.linspace(y_min, y_max, 50)
-        X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
 
-        # Prepare prediction grid (in actual values)
-        grid_points = []
-        for i in range(len(x_grid)):
-            for j in range(len(y_grid)):
-                point = st.session_state["contour_settings"].copy()
-                point[x_factor] = X_mesh[j, i]
-                point[y_factor] = Y_mesh[j, i]
-                grid_points.append(point)
+        base_settings = st.session_state["contour_settings"]
 
-        # Predict on grid using coefficient-based predictor (patsy-free)
-        Z_pred = [
-            results.predict_from_settings(encode_settings_dict(pt, factors))
-            for pt in grid_points
-        ]
-        Z_mesh = np.array(Z_pred).reshape(X_mesh.shape)
+        def _predict(point):
+            return results.predict_from_settings(
+                encode_settings_dict(point, factors)
+            )
+
+        Z_mesh = build_surface_mesh(
+            x_grid, y_grid, x_factor, y_factor, base_settings, _predict
+        )
 
         return Z_mesh, x_grid, y_grid
 
