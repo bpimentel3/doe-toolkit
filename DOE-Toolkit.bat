@@ -7,7 +7,7 @@ REM This ensures src/ is found regardless of where the user extracted the zip.
 cd /d "%~dp0"
 
 REM Check the bundled environment exists
-if not exist "env\Scripts\streamlit.exe" (
+if not exist "env\python.exe" (
     echo ERROR: Bundled environment not found.
     echo Please re-download and extract DOE-Toolkit again.
     pause
@@ -37,8 +37,10 @@ timeout /t 2 /nobreak >nul
 start "" http://localhost:8501
 
 REM Launch Streamlit using the bundled environment.
-REM No subprocess spawning, no recursion - streamlit.exe is a real executable.
-"env\Scripts\streamlit.exe" run src\ui\app.py ^
+REM Run via "python -m streamlit" instead of the pip Scripts\streamlit.exe
+REM launcher: pip shims embed the build machine's absolute interpreter path
+REM and fail with "Fatal error in launcher" anywhere that path doesn't exist.
+"env\python.exe" -m streamlit run src\ui\app.py ^
     --server.headless true ^
     --browser.gatherUsageStats false ^
     --server.enableCORS false ^

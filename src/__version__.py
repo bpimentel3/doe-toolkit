@@ -5,4 +5,4 @@ This is the single source of truth for the application version.
 Update this file when preparing a new release.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

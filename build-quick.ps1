@@ -15,7 +15,7 @@ Write-Host "============================================================" -Foreg
 Write-Host ""
 
 # ── Verify a prior full build exists ──────────────────────────────────
-if (-not (Test-Path "$OutputDir\env\Scripts\streamlit.exe")) {
+if (-not (Test-Path "$OutputDir\env\python.exe")) {
     Write-Host "ERROR: No existing build found at $OutputDir." -ForegroundColor Red
     Write-Host "Run build.ps1 first to create a full build." -ForegroundColor Yellow
     Read-Host "Press Enter to exit"

@@ -66,8 +66,7 @@ dist\DOE-Toolkit\
 │   └── ui\app.py
 ├── .streamlit\         ← Streamlit config
 ├── env\                ← bundled Python + all dependencies
-│   └── Scripts\
-│       └── streamlit.exe
+│   └── python.exe
 ├── THIRD_PARTY_NOTICES.txt  ← license map of every bundled package (auto-generated)
 ├── LICENSE.txt
 └── QUICKSTART.md
@@ -111,10 +110,10 @@ Browser should open to `http://localhost:8501` within ~10 seconds.
 
 ```powershell
 # Create zip from project root
-Compress-Archive -Path dist\DOE-Toolkit -DestinationPath dist\DOE-Toolkit-v0.1.0-win64.zip
+Compress-Archive -Path dist\DOE-Toolkit -DestinationPath dist\DOE-Toolkit-v0.2.0-win64.zip
 ```
 
-Share `DOE-Toolkit-v0.1.0-win64.zip`. Users:
+Share `DOE-Toolkit-v0.2.0-win64.zip`. Users:
 1. Extract the zip (right-click → Extract All)
 2. Double-click `DOE-Toolkit.bat`
 3. Browser opens with the app
@@ -125,12 +124,15 @@ Share `DOE-Toolkit-v0.1.0-win64.zip`. Users:
 
 `DOE-Toolkit.bat` runs:
 ```bat
-"env\Scripts\streamlit.exe" run src\ui\app.py
+"env\python.exe" -m streamlit run src\ui\app.py
 ```
 
-`env\Scripts\streamlit.exe` is a real Windows executable inside the bundled
-environment — not `sys.executable` pointing back at itself. This avoids the
-recursive spawn issue that PyInstaller had.
+Streamlit is launched through the bundled `env\python.exe` with the `streamlit`
+module rather than the pip-generated `Scripts\streamlit.exe` launcher. Pip
+launchers embed the build machine's absolute interpreter path and break with
+`Fatal error in launcher: Unable to create process using ...` once the zip is
+extracted anywhere that path doesn't exist. `python -m streamlit` uses only
+paths relative to the app folder, so the app is fully relocatable.
 
 ---
 
