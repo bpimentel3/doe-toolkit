@@ -6,6 +6,7 @@ All notable changes to DOE Toolkit are documented here. Format follows [Keep a C
 
 ### New
 - **Design-aware automatic model selection** on the Analyze page (Step 6): the app now suggests and applies a model matched to the design actually used (full/fractional factorial, response surface, split-plot), integrated with the BIC stepwise workflow.
+- **In-app Help & Docs page** (Step 0): the algorithm reference docs in `docs/algorithms/` are now rendered directly inside the app via a topic selectbox, so the documentation travels with the installed and packaged app.
 
 ### Fixed
 - Fractional-factorial designs with natural-unit factor ranges no longer double-decode, which previously produced garbage factor levels (#45).

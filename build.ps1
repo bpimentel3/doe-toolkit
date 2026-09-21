@@ -134,6 +134,11 @@ foreach ($doc in @("LICENSE.txt", "QUICKSTART.md")) {
     if (Test-Path $doc) { Copy-Item -Force $doc "$OutputDir\$doc" }
 }
 
+# In-app reference documentation (rendered on the Help & Docs page)
+if (Test-Path "docs") {
+    Copy-Item -Recurse -Force "docs" "$OutputDir\docs"
+}
+
 Write-Host "      Done." -ForegroundColor Green
 Write-Host ""
 

@@ -212,6 +212,11 @@ def add_quick_navigation():
         disabled=not progress['accessible'][7]
     )
 
+    st.sidebar.page_link(
+        "pages/0_help.py",
+        label="📖 Help & Docs"
+    )
+
 
 def add_project_load():
     """
