@@ -101,8 +101,9 @@ def create_polynomial_builder(
         # Convert points array to DataFrame
         design_df = pd.DataFrame(X_points, columns=[f.name for f in factors])
 
-        # Use centralized model matrix builder
-        return build_model_matrix(design_df, factors, model_terms)
+        # Use centralized model matrix builder (X only; column names are not needed)
+        X, _ = build_model_matrix(design_df, factors, model_terms)
+        return X
 
     return builder
 
