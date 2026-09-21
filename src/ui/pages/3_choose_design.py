@@ -363,19 +363,10 @@ if st.session_state.get('design_type'):
                 help="α determines axial point distance from center"
             )
             
-            # Parse alpha
-            if "Face-centered" in alpha:
-                alpha_value = 1.0
-            elif "Orthogonal" in alpha:
-                # Calculate orthogonal alpha
-                k = len(factors)
-                alpha_value = (2 ** k) ** 0.25
-            else:  # Rotatable
-                k = len(factors)
-                alpha_value = k ** 0.5
-            
+            # Store the dropdown label; the core generator computes the correct
+            # numeric α (e.g. rotatable = (2^k)^(1/4)). The old code computed a
+            # wrong float here (k**0.5) that Step 4 never even read.
             st.session_state['design_config'] = {
-                'alpha': alpha_value,
                 'alpha_type': alpha
             }
         else:

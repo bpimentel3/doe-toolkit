@@ -291,11 +291,39 @@ if st.session_state.get('design') is None:
                         CentralCompositeDesign,  
                         BoxBehnkenDesign          
                     )
-                    
-                    rsd_variant = st.session_state.get('rsd_variant', 'CCD')
-    
-                    if rsd_variant == 'CCD':
-                        alpha = st.session_state.get('ccd_alpha', 'rotatable')
+                    from src.ui.utils.rsm_config import alpha_for_label, resolve_rsm_variant
+
+                    # Route by the Step 3 design-type label. The old code read an
+                    # 'rsd_variant' session key that nothing ever wrote, so every
+                    # Response Surface choice silently generated a CCD.
+                    randomize = design_config.get('randomize', True)
+
+                    if resolve_rsm_variant(design_type) == 'box_behnken':
+                        center_points = design_config.get('n_center_points', 3)
+                        
+                        # Create Box-Behnken object
+                        bbd = BoxBehnkenDesign(
+                            factors=factors,
+                            center_points=center_points
+                        )
+                        
+                        # Generate design
+                        design = bbd.generate(
+                            randomize=randomize,
+                            random_seed=seed
+                        )
+                        
+                        # Store metadata
+                        st.session_state['design_metadata'] = {
+                            'variant': 'Box-Behnken',
+                            'n_factorial': bbd.n_factorial,
+                            'n_center': bbd.n_center
+                        }
+                        
+                    else:
+                        # Semantic alpha from the Step 3 dropdown label (the core
+                        # computes the correct numeric value, e.g. (2^k)^(1/4)).
+                        alpha = alpha_for_label(design_config.get('alpha_type'))
                         center_points = design_config.get('n_center_points', 6)
                         fraction = st.session_state.get('ccd_fraction')  # For fractional CCD
                         
@@ -309,8 +337,8 @@ if st.session_state.get('design') is None:
                         
                         # Generate design
                         design = ccd.generate(
-                            randomize=st.session_state.get('randomize', True),
-                            random_seed=st.session_state.get('random_seed')
+                            randomize=randomize,
+                            random_seed=seed
                         )
                         
                         # Store metadata
@@ -321,28 +349,6 @@ if st.session_state.get('design') is None:
                             'n_factorial': ccd.n_factorial,
                             'n_axial': ccd.n_axial,
                             'n_center': ccd.n_center
-                        }
-                        
-                    elif rsd_variant == 'Box-Behnken':
-                        center_points = design_config.get('n_center_points', 3)
-                        
-                        # Create Box-Behnken object
-                        bbd = BoxBehnkenDesign(
-                            factors=factors,
-                            center_points=center_points
-                        )
-                        
-                        # Generate design
-                        design = bbd.generate(
-                            randomize=st.session_state.get('randomize', True),
-                            random_seed=st.session_state.get('random_seed')
-                        )
-                        
-                        # Store metadata
-                        st.session_state['design_metadata'] = {
-                            'variant': 'Box-Behnken',
-                            'n_factorial': bbd.n_factorial,
-                            'n_center': bbd.n_center
                         }
                 
                 elif "D-Optimal" in design_type:
