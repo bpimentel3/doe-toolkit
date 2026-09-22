@@ -243,7 +243,7 @@ if st.session_state.get('design') is None:
                         factors=factors,
                         n_center_points=design_config.get('n_center_points', 0),
                         n_replicates=design_config.get('n_replicates', 1),
-                        randomize=st.session_state.get('randomize', True),
+                        randomize=design_config.get('randomize', True),
                         random_seed=st.session_state.get('random_seed'),
                         n_blocks=None if n_blocks <= 1 else n_blocks
                     )
@@ -257,9 +257,9 @@ if st.session_state.get('design') is None:
                 elif design_type == "Fractional Factorial":
                     from src.core.fractional_factorial import FractionalFactorial
                     
-                    fraction = st.session_state.get('fraction', '1/2')
-                    resolution = st.session_state.get('resolution')
-                    generators = st.session_state.get('custom_generators')
+                    fraction = design_config.get('fraction', '1/2')
+                    resolution = design_config.get('resolution')
+                    generators = design_config.get('custom_generators')
                     
                     # Create FractionalFactorial object
                     ff = FractionalFactorial(
@@ -272,7 +272,7 @@ if st.session_state.get('design') is None:
                     # Generate design
                     n_ff_blocks = design_config.get('n_blocks', 1)
                     design = ff.generate(
-                        randomize=st.session_state.get('randomize', True),
+                        randomize=design_config.get('randomize', True),
                         random_seed=st.session_state.get('random_seed'),
                         n_blocks=None if n_ff_blocks <= 1 else n_ff_blocks
                     )
@@ -291,7 +291,7 @@ if st.session_state.get('design') is None:
                         CentralCompositeDesign,  
                         BoxBehnkenDesign          
                     )
-from src.ui.utils.rsm_config import alpha_for_label, resolve_rsm_variant
+                    from src.ui.utils.rsm_config import alpha_for_label, resolve_rsm_variant
 
                     # Route by the Step 3 design-type label. The old code read an
                     # 'rsd_variant' session key that nothing ever wrote, so every
