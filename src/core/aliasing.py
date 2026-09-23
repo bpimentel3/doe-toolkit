@@ -194,10 +194,16 @@ class GeneratorValidator:
         left = left.strip()
         right = right.strip().replace('*', '')
         
-        # Check that generated factor is the next one in sequence
+        # The left side must be one of the generated (non-base) factors.
         n_base = self.k - self.p
-        expected_symbol = chr(65 + n_base)  # First generated factor
-        
+        generated = [chr(65 + i) for i in range(n_base, self.k)]
+
+        if left not in generated:
+            raise ValueError(
+                f"Generator '{gen_str}' must define a generated factor "
+                f"(expected one of {', '.join(generated)}), not base factor '{left}'"
+            )
+
         available = self.mapper.algebraic_symbols[:n_base]
         
         # Check right side factors exist

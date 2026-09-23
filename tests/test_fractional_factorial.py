@@ -273,12 +273,46 @@ class TestValidation:
         """Test that fraction >= k raises error."""
         factors = [
             Factor(f"Factor_{chr(65+i)}", FactorType.CONTINUOUS,
-                  ChangeabilityLevel.EASY, levels=[-1, 1])
+                   ChangeabilityLevel.EASY, levels=[-1, 1])
             for i in range(4)
         ]
         
         with pytest.raises(ValueError, match="Cannot create"):
             FractionalFactorial(factors, fraction="1/16")
+    
+    def test_base_factor_on_generator_lhs_rejected(self):
+        """Regression (#47): a generator whose LHS is a base factor must fail
+        validation at construction, not crash later with an opaque KeyError."""
+        factors = [
+            Factor(f"Factor_{chr(65+i)}", FactorType.CONTINUOUS,
+                   ChangeabilityLevel.EASY, levels=[-1, 1])
+            for i in range(5)
+        ]
+        
+        with pytest.raises(ValueError, match="must define a generated factor"):
+            FractionalFactorial(factors, fraction="1/2", generators=["A=BCD"])
+    
+    def test_custom_multi_generator_design(self):
+        """Regression (follow-up to #47): a valid 2^(6-2) custom design with
+        generators on the second generated factor must build (doc example
+        E=ACD, F=ABD)."""
+        factors = [
+            Factor(f"Factor_{chr(65+i)}", FactorType.CONTINUOUS,
+                   ChangeabilityLevel.EASY, levels=[-1, 1])
+            for i in range(6)
+        ]
+        
+        ff = FractionalFactorial(
+            factors,
+            fraction="1/4",
+            generators=["E=ACD", "F=ABD"]
+        )
+        
+        assert ff.generators_algebraic == [("E", "ACD"), ("F", "ABD")]
+        assert ff.resolution == 4
+        
+        design = ff.generate(randomize=False)
+        assert len(design) == 16
 
 
 class TestDesignGeneration:
@@ -307,7 +341,7 @@ class TestDesignGeneration:
         """Test that all runs are unique."""
         factors = [
             Factor(f"Factor_{chr(65+i)}", FactorType.CONTINUOUS,
-                  ChangeabilityLevel.EASY, levels=[-1, 1])
+                   ChangeabilityLevel.EASY, levels=[-1, 1])
             for i in range(5)
         ]
         
@@ -320,3 +354,43 @@ class TestDesignGeneration:
         # Check for duplicates
         n_unique = design[factor_cols].drop_duplicates().shape[0]
         assert n_unique == len(design), "Design contains duplicate runs"
+    
+    def test_natural_range_factors_not_double_decoded(self):
+        """Regression (#45): designs with real-world factor ranges must not
+        double-decode. Every output column must stay within its declared
+        levels ([-1, 1] is idempotent under decode, so it hides this bug)."""
+        levels = [(10, 14), (11, 15), (12, 16), (13, 17), (14, 18)]
+        factors = [
+            Factor(f"F{i}", FactorType.CONTINUOUS,
+                   ChangeabilityLevel.EASY, levels=[lo, hi])
+            for i, (lo, hi) in enumerate(levels)
+        ]
+        
+        ff = FractionalFactorial(factors, fraction="1/2")
+        design = ff.generate(randomize=False)
+        
+        for factor, (lo, hi) in zip(factors, levels):
+            values = set(design[factor.name].unique())
+            assert values <= {float(lo), float(hi)}, (
+                f"{factor.name} values {values} outside declared "
+                f"levels [{lo}, {hi}]"
+            )
+    
+    def test_half_fraction_resolution_6_and_7_reachable(self):
+        """Regression (#48): 2^(6-1) Res VI and 2^(7-1) Res VII must be
+        reachable through the default (auto-resolution) path."""
+        for k, expected_res, expected_generator, n_runs in [
+            (6, 6, ("F", "ABCDE"), 32),
+            (7, 7, ("G", "ABCDEF"), 64),
+        ]:
+            factors = [
+                Factor(f"F{i}", FactorType.CONTINUOUS,
+                       ChangeabilityLevel.EASY, levels=[-1, 1])
+                for i in range(k)
+            ]
+            
+            ff = FractionalFactorial(factors, fraction="1/2")
+            
+            assert ff.resolution == expected_res
+            assert ff.generators_algebraic == [expected_generator]
+            assert len(ff.generate(randomize=False)) == n_runs

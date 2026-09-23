@@ -19,6 +19,7 @@ from src.ui.utils.state_management import (
     invalidate_downstream_state
 )
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
+from src.core.aliasing import STANDARD_GENERATORS
 from src.ui.components.constraint_builder import (
     show_constraint_builder,
     show_constraint_help
@@ -291,13 +292,10 @@ if st.session_state.get('design_type'):
             help="Smaller fractions = fewer runs but more aliasing"
         )
         
-        # Resolution
-        resolution = st.selectbox(
-            "Resolution",
-            [3, 4, 5],
-            index=2,
-            help="Higher resolution = less aliasing. V is best, III is minimum."
-        )
+        p = int(fraction.split('/')[1]).bit_length() - 1
+        achievable = sorted({
+            res for (kk, pp, res) in STANDARD_GENERATORS if kk == k and pp == p
+        })
         
         # Generator specification
         generator_mode = st.radio(
@@ -309,7 +307,6 @@ if st.session_state.get('design_type'):
         if generator_mode == "Custom":
             st.warning("Custom generators require knowledge of alias structure")
             
-            p = int(fraction.split('/')[1]).bit_length() - 1
             generators_input = st.text_area(
                 f"Generators (one per line, need {p})",
                 placeholder="E=ABCD\nF=ABC",
@@ -317,15 +314,76 @@ if st.session_state.get('design_type'):
             )
             
             custom_generators = [g.strip() for g in generators_input.split('\n') if g.strip()]
-        else:
-            custom_generators = None
+            
+            min_options = ["No minimum (as generated)"] + [f"Resolution {res}" for res in range(3, 8)]
+            min_choice = st.selectbox(
+                "Minimum Resolution (optional)",
+                min_options,
+                index=0,
+                help="Your custom generators must achieve at least this resolution, "
+                     "or the design will be rejected."
+            )
+            resolution = None if min_choice.startswith("No minimum") else int(min_choice.split()[-1])
+            
+            # Live validation: report whether the entered generators meet the requirement
+            if custom_generators:
+                try:
+                    from src.core.fractional_factorial import FractionalFactorial
+                    trial = FractionalFactorial(
+                        factors=factors,
+                        fraction=fraction,
+                        resolution=resolution,
+                        generators=custom_generators
+                    )
+                    achieved = trial.resolution
+                    if resolution is not None and achieved < resolution:
+                        st.error(
+                            f"Your generators achieve Resolution {achieved}, "
+                            f"below the selected minimum Resolution {resolution}."
+                        )
+                    else:
+                        message = f"Generators valid — achieve Resolution {achieved}."
+                        if resolution is not None:
+                            message += " Meets the selected minimum."
+                        st.success(message)
+                except Exception as e:
+                    st.error(f"Invalid generators: {e}")
         
-        n_center_points = st.number_input(
-            "Number of Center Points",
-            min_value=0,
-            max_value=10,
-            value=3
-        )
+        else:  # Standard (Recommended)
+            if achievable:
+                st.info(
+                    f"**Expected resolution:** {achievable[-1]} "
+                    f"(highest standard resolution for {k} factors at a {fraction} fraction)."
+                )
+            else:
+                current_runs = 2 ** (k - p)
+                alternatives = []
+                for alt_frac in valid_fractions:
+                    alt_p = int(alt_frac.split('/')[1]).bit_length() - 1
+                    alt_res = sorted({
+                        res for (kk, pp, res) in STANDARD_GENERATORS
+                        if kk == k and pp == alt_p
+                    })
+                    if alt_p != p and alt_res:
+                        alternatives.append(
+                            f"{alt_frac} → {2 ** (k - alt_p)} runs (Res {alt_res[-1]})"
+                        )
+                
+                guidance = (
+                    f"No standard generator set exists for {k} factors at "
+                    f"a {fraction} fraction ({current_runs} runs)."
+                )
+                if alternatives:
+                    guidance += (
+                        " Standard sets are available at: "
+                        + ", ".join(alternatives)
+                        + ". Choose one of these fractions, or switch to Custom generators."
+                    )
+                else:
+                    guidance += " Switch to Custom generators to build the design."
+                st.warning(guidance)
+            resolution = None  # auto-select highest resolution available
+            custom_generators = None
         
         n_blocks = st.number_input(
             "Number of Blocks",
@@ -343,14 +401,12 @@ if st.session_state.get('design_type'):
             'resolution': resolution,
             'generator_mode': generator_mode,
             'custom_generators': custom_generators,
-            'n_center_points': n_center_points,
             'n_blocks': n_blocks,
             'randomize': randomize
         }
         
         # Estimate runs
-        p = int(fraction.split('/')[1]).bit_length() - 1
-        total_runs = 2 ** (k - p) + n_center_points
+        total_runs = 2 ** (k - p)
         st.info(f"**Estimated runs:** {total_runs}")
     
     elif design_type in ["Response Surface (CCD)", "Response Surface (Box-Behnken)"]:
@@ -359,16 +415,26 @@ if st.session_state.get('design_type'):
         if "CCD" in design_type:
             alpha = st.selectbox(
                 "Axial Distance (α)",
-                ["Face-centered (α=1)", "Orthogonal", "Rotatable"],
+                ["Rotatable", "Orthogonal", "Face-centered (α=1)"],
                 help="α determines axial point distance from center"
             )
             
-            # Store the dropdown label; the core generator computes the correct
-            # numeric α (e.g. rotatable = (2^k)^(1/4)). The old code computed a
-            # wrong float here (k**0.5) that Step 4 never even read.
+# Map the display label to the semantic value consumed by the
+            # core generator (mirrors rsm_config.alpha_for_label). The old code
+            # computed a wrong numeric float here (k**0.5) that Step 4 ignored.
+            if "Face-centered" in alpha:
+                alpha_value = 'face'
+            elif "Orthogonal" in alpha:
+                alpha_value = 'orthogonal'
+            else:  # Rotatable
+                alpha_value = 'rotatable'
+            
             st.session_state['design_config'] = {
+                'alpha': alpha_value,
                 'alpha_type': alpha
             }
+            # Step 4 reads ccd_alpha when building the CCD.
+            st.session_state['ccd_alpha'] = alpha_value
         else:
             st.session_state['design_config'] = {}
         
@@ -381,6 +447,23 @@ if st.session_state.get('design_type'):
         )
         
         st.session_state['design_config']['n_center_points'] = n_center_points
+        
+        # Live readout of the axial distance the core generator will use
+        if "CCD" in design_type:
+            from src.core.response_surface import CentralCompositeDesign
+            
+            try:
+                _preview_ccd = CentralCompositeDesign(
+                    factors=factors,
+                    alpha=alpha_value,
+                    center_points=n_center_points
+                )
+                st.caption(
+                    f"Axial distance (α) with {n_center_points} center point(s): "
+                    f"**{_preview_ccd.alpha:.4f}**"
+                )
+            except Exception as e:
+                st.caption(f"α unavailable: {e}")
         
         randomize = st.checkbox("Randomize Run Order", value=True)
         st.session_state['design_config']['randomize'] = randomize
