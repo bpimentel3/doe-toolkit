@@ -359,16 +359,26 @@ if st.session_state.get('design_type'):
         if "CCD" in design_type:
             alpha = st.selectbox(
                 "Axial Distance (α)",
-                ["Face-centered (α=1)", "Orthogonal", "Rotatable"],
+                ["Rotatable", "Orthogonal", "Face-centered (α=1)"],
                 help="α determines axial point distance from center"
             )
             
-            # Store the dropdown label; the core generator computes the correct
-            # numeric α (e.g. rotatable = (2^k)^(1/4)). The old code computed a
-            # wrong float here (k**0.5) that Step 4 never even read.
+# Map the display label to the semantic value consumed by the
+            # core generator (mirrors rsm_config.alpha_for_label). The old code
+            # computed a wrong numeric float here (k**0.5) that Step 4 ignored.
+            if "Face-centered" in alpha:
+                alpha_value = 'face'
+            elif "Orthogonal" in alpha:
+                alpha_value = 'orthogonal'
+            else:  # Rotatable
+                alpha_value = 'rotatable'
+            
             st.session_state['design_config'] = {
+                'alpha': alpha_value,
                 'alpha_type': alpha
             }
+            # Step 4 reads ccd_alpha when building the CCD.
+            st.session_state['ccd_alpha'] = alpha_value
         else:
             st.session_state['design_config'] = {}
         
@@ -381,6 +391,23 @@ if st.session_state.get('design_type'):
         )
         
         st.session_state['design_config']['n_center_points'] = n_center_points
+        
+        # Live readout of the axial distance the core generator will use
+        if "CCD" in design_type:
+            from src.core.response_surface import CentralCompositeDesign
+            
+            try:
+                _preview_ccd = CentralCompositeDesign(
+                    factors=factors,
+                    alpha=alpha_value,
+                    center_points=n_center_points
+                )
+                st.caption(
+                    f"Axial distance (α) with {n_center_points} center point(s): "
+                    f"**{_preview_ccd.alpha:.4f}**"
+                )
+            except Exception as e:
+                st.caption(f"α unavailable: {e}")
         
         randomize = st.checkbox("Randomize Run Order", value=True)
         st.session_state['design_config']['randomize'] = randomize

@@ -6,6 +6,7 @@ generator selection and alias structure calculation.
 """
 
 from typing import List, Dict, Optional, Tuple
+import itertools
 import pandas as pd
 import numpy as np
 
@@ -20,7 +21,6 @@ from src.core.aliasing import (
     format_alias_table,
     validate_resolution_achievable
 )
-from src.core.full_factorial import full_factorial
 
 class FractionalFactorial:
     """
@@ -184,8 +184,8 @@ class FractionalFactorial:
     
     def _get_max_resolution(self) -> int:
         """Determine maximum achievable resolution for given k and p."""
-        # Try resolutions from V down to III
-        for res in [5, 4, 3]:
+        # Try resolutions from VII down to III
+        for res in [7, 6, 5, 4, 3]:
             if get_standard_generators(self.k, self.p, res) is not None:
                 return res
         
@@ -230,14 +230,16 @@ class FractionalFactorial:
         # Number of base factors (not generated)
         n_base = self.k - self.p
         base_factors = self.factors[:n_base]
-        
-        # Generate full factorial for base factors
-        base_design = full_factorial(base_factors, randomize=False)
-        
-        # Remove StdOrder and RunOrder columns
-        base_design = base_design[[f.name for f in base_factors]]
-        
-        # Generate additional factors using generators
+
+        # Build the base design directly on the coded (±1) grid.  All
+        # factors here are 2-level, so each base factor varies over -1/+1.
+        base_design = pd.DataFrame(
+            itertools.product([-1.0, 1.0], repeat=n_base),
+            columns=[f.name for f in base_factors]
+        )
+
+        # Generate additional factors using generators (multiplying coded
+        # values, so generated factors inherit the same coded scale)
         for factor_symbol, expression in self.generators_algebraic:
             # Get the factor object
             factor_idx = ord(factor_symbol) - 65
@@ -269,10 +271,19 @@ class FractionalFactorial:
         if n_blocks is not None:
             design = self._assign_blocks(design, n_blocks)
 
-        # Decode continuous factors from coded [-1, +1] to natural units.
-        # base factors were generated at coded levels by full_factorial;
-        # generated (aliased) factors inherit the same coded scale.
+        # Decode continuous factors from coded [-1, +1] to natural units
+        # exactly once (the coded grid above is the only coded
+        # representation; nothing else decodes the design).
         design = _decode_design(design, self.factors)
+
+        # Discrete-numeric factors were carried on the coded grid; restore
+        # their two declared natural levels.
+        for factor in self.factors:
+            if factor.is_discrete_numeric() and factor.name in design.columns:
+                low, high = factor.levels
+                design[factor.name] = design[factor.name].replace(
+                    {-1.0: low, 1.0: high}
+                )
 
         return design
     

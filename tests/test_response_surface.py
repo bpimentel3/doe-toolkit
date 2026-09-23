@@ -81,6 +81,47 @@ class TestCentralCompositeDesign:
         max_value = axial_points[['A', 'B']].abs().max().max()
         assert abs(max_value - custom_alpha) < 0.001
     
+    def test_orthogonal_alpha_produces_orthogonal_design(self):
+        """Regression (#46): the 'orthogonal' CCD alpha must satisfy the
+        standard Box-Hunter condition, so the centered model matrix has
+        (near-)zero off-diagonal correlation."""
+        from itertools import combinations
+        
+        for k, n_center, expected_alpha in [(2, 5, 1.2671), (3, 6, 1.5246)]:
+            factors = [
+                Factor(chr(65 + i), FactorType.CONTINUOUS,
+                       ChangeabilityLevel.EASY, levels=[-1, 1])
+                for i in range(k)
+            ]
+            
+            ccd = CentralCompositeDesign(
+                factors, alpha="orthogonal", center_points=n_center
+            )
+            
+            assert abs(ccd.alpha - expected_alpha) < 0.001, (
+                f"k={k}, n_center={n_center}: alpha {ccd.alpha} != {expected_alpha}"
+            )
+            
+            design = ccd.generate(randomize=False)
+            X = design[[f.name for f in factors]].values
+            
+            # Model matrix: linear terms, two-factor interactions, and
+            # mean-centered quadratic terms.
+            terms = list(X.T)
+            for i, j in combinations(range(k), 2):
+                terms.append(X[:, i] * X[:, j])
+            for i in range(k):
+                terms.append(X[:, i] ** 2 - (X[:, i] ** 2).mean())
+            model = np.column_stack(terms)
+            
+            corr = np.corrcoef(model, rowvar=False)
+            max_off_diag = np.abs(corr - np.eye(len(corr))).max()
+            
+            assert max_off_diag < 1e-10, (
+                f"k={k}, n_center={n_center}: max off-diagonal "
+                f"correlation {max_off_diag}"
+            )
+    
     def test_factorial_points_correct(self):
         """Test that factorial points are correct."""
         factors = [

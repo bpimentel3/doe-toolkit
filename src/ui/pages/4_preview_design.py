@@ -291,7 +291,7 @@ if st.session_state.get('design') is None:
                         CentralCompositeDesign,  
                         BoxBehnkenDesign          
                     )
-                    from src.ui.utils.rsm_config import alpha_for_label, resolve_rsm_variant
+from src.ui.utils.rsm_config import alpha_for_label, resolve_rsm_variant
 
                     # Route by the Step 3 design-type label. The old code read an
                     # 'rsd_variant' session key that nothing ever wrote, so every
@@ -323,7 +323,12 @@ if st.session_state.get('design') is None:
                     else:
                         # Semantic alpha from the Step 3 dropdown label (the core
                         # computes the correct numeric value, e.g. (2^k)^(1/4)).
-                        alpha = alpha_for_label(design_config.get('alpha_type'))
+                        alpha = (
+                            st.session_state.get('ccd_alpha')
+                            or design_config.get('alpha')
+                            or alpha_for_label(design_config.get('alpha_type'))
+                            or 'rotatable'
+                        )
                         center_points = design_config.get('n_center_points', 6)
                         fraction = st.session_state.get('ccd_fraction')  # For fractional CCD
                         
@@ -496,6 +501,8 @@ else:
             st.metric("Blocks", design['Block'].nunique())
         elif metadata.get('resolution'):
             st.metric("Resolution", metadata['resolution'])
+        elif metadata.get('alpha'):
+            st.metric("Alpha (α)", round(metadata['alpha'], 4))
         else:
             st.metric("Design Points", len(design))
     

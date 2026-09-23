@@ -153,6 +153,25 @@ class TestGeneratorValidator:
         with pytest.raises(ValueError, match="not in base factors"):
             self.validator.validate_factors_exist("E=XYZ")
     
+    def test_generator_lhs_must_be_generated_factor(self):
+        """Regression (#47): LHS of a generator must be the next generated
+        factor, not a base factor."""
+        with pytest.raises(ValueError, match="must define a generated factor"):
+            self.validator.validate_factors_exist("A=BCD")
+    
+    def test_custom_multi_generator_any_generated_factor(self):
+        """Regression (follow-up to #47): with p > 1, later generators'
+        LHS (e.g. 'F') are still valid generated factors."""
+        mapper = FactorMapper([
+            Factor(f"Factor_{chr(65+i)}", FactorType.CONTINUOUS,
+                  ChangeabilityLevel.EASY, levels=[-1, 1])
+            for i in range(6)
+        ])
+        validator = GeneratorValidator(6, 2, mapper)
+        
+        # Should not raise
+        validator.validate_all(["E=ACD", "F=ABD"])
+    
     def test_wrong_number_generators(self):
         """Test that wrong number of generators raises error."""
         with pytest.raises(ValueError, match="Expected 1 generators"):

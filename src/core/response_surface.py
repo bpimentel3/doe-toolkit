@@ -203,9 +203,11 @@ class CentralCompositeDesign(ResponseSurfaceDesign):
             return self.n_factorial ** 0.25
         
         elif alpha_type == "orthogonal":
-            # Orthogonal alpha: makes X'X diagonal
-            # Formula: α = [(F + √(F² + 4Fλ)) / 2]^(1/4)
-            # where F = n_factorial, λ = 2k/n_center
+            # Orthogonal alpha: makes the model matrix orthogonal.
+            # Standard Box-Hunter / Myers orthogonality condition:
+            #     α⁴ = F·(√(F + T) − √F)² / 4,   T = 2k + n_center
+            # where F = n_factorial (see Myers, Montgomery & Anderson-Cook,
+            # Response Surface Methodology, 4th Ed.).
             
             if self.n_center == 0:
                 warnings.warn(
@@ -215,10 +217,9 @@ class CentralCompositeDesign(ResponseSurfaceDesign):
                 return self.n_factorial ** 0.25
             
             F = self.n_factorial
-            lambda_val = (2 * self.k) / self.n_center
+            n_axial_and_center = 2 * self.k + self.n_center
             
-            discriminant = F**2 + 4*F*lambda_val
-            alpha_4th = (F + np.sqrt(discriminant)) / 2
+            alpha_4th = F * (np.sqrt(F + n_axial_and_center) - np.sqrt(F)) ** 2 / 4
             alpha = alpha_4th ** 0.25
             
             return alpha
