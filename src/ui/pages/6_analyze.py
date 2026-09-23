@@ -35,7 +35,8 @@ from src.ui.utils.plotting import (
     create_half_normal_plot,
     _label_with_units,
 )
-from src.ui.components.model_builder import display_model_builder, format_term_for_display, display_stepwise_button
+from src.ui.components.model_builder import display_model_builder, format_term_for_display
+from src.ui.components.model_selection import display_model_selection
 from src.ui.components.diagnostics_display import display_diagnostics_tab
 from src.ui.components.lof_testing import display_lack_of_fit_test
 from src.ui.components.profiler_display import display_profiler_tab
@@ -247,19 +248,77 @@ if selected_response not in st.session_state['model_terms_per_response']:
 
 current_terms = list(st.session_state['model_terms_per_response'][selected_response])
 
-updated_terms = display_model_builder(
-    factors=factors, current_terms=current_terms, response_name=selected_response,
-    key_prefix=f"model_builder_{selected_response}"
+# Build the analysis object once (before the model builder / selection panel so
+# both the manual builder and the automatic selector can use it).
+try:
+    response_data = responses[selected_response]
+
+    if st.session_state['excluded_rows']:
+        mask = np.ones(len(design), dtype=bool)
+        mask[st.session_state['excluded_rows']] = False
+        design_filtered = design[mask].reset_index(drop=True)
+        response_filtered = response_data[mask]
+    else:
+        design_filtered = design
+        response_filtered = response_data
+
+    analysis = ANOVAAnalysis(
+        design=design_filtered, response=response_filtered,
+        factors=factors, response_name=selected_response
+    )
+except Exception as e:
+    st.error(f"Failed to prepare analysis data: {e}")
+    st.exception(e)
+    st.stop()
+
+# ==== MODEL SELECTION ====
+model_selection_method = st.radio(
+    "Model Selection",
+    options=["Manual", "Backward", "Forward", "Stepwise", "Stepwise (BIC)"],
+    index=1,  # Default: Backward (single default for every DOE family)
+    key=f"model_selection_method_{selected_response}",
+    horizontal=True,
+    help=(
+        "Manual: keep the current model-builder workflow. Backward / Forward / "
+        "Stepwise / Stepwise (BIC): automatically select a statistically "
+        "justified hierarchical DOE model. DOE Toolkit defaults to Backward "
+        "Elimination: the richest hierarchical model supported by the detected "
+        "design is fitted first and then simplified while preserving hierarchy "
+        "and strong heredity rules. Candidate terms depend on the detected "
+        "design type — response-surface designs include quadratic effects, "
+        "while categorical factorial designs use main effects and "
+        "interactions only."
+    ),
 )
 
-# Force update if terms changed. The builder may either mutate the list it was
-# given in place or return a whole new list; compare by value so both cases are
-# caught and trigger a refit.
-if updated_terms != current_terms:
-    st.session_state['model_terms_per_response'][selected_response] = updated_terms
-    invalidate_downstream_state(from_step=5)
-    st.rerun()
+if model_selection_method == "Manual":
+    updated_terms = display_model_builder(
+        factors=factors, current_terms=current_terms.copy(), response_name=selected_response,
+        key_prefix=f"model_builder_{selected_response}"
+    )
 
+    # Force update if terms changed. The builder mutates the list it is given in
+    # place (operator buttons) or may return a whole new list (presets), so it
+    # gets a copy and changes are detected against that untouched snapshot.
+    if updated_terms != current_terms:
+        st.session_state['model_terms_per_response'][selected_response] = updated_terms
+        invalidate_downstream_state(from_step=5)
+        st.rerun()
+else:
+    selection_results = display_model_selection(
+        factors=factors,
+        anova_analysis=analysis,
+        selected_response=selected_response,
+        key_prefix=f"model_selection_{selected_response}",
+        method=model_selection_method,
+    )
+
+    if selection_results is not None:
+        st.session_state['model_terms_per_response'][selected_response] = list(
+            selection_results.final_terms
+        )
+        invalidate_downstream_state(from_step=5)
+        st.rerun()
 
 st.divider()
 
@@ -283,26 +342,10 @@ if exclude_mode:
 
 with st.spinner(f"Fitting model for {selected_response}..."):
     try:
-        response_data = responses[selected_response]
-        
-        if st.session_state['excluded_rows']:
-            mask = np.ones(len(design), dtype=bool)
-            mask[st.session_state['excluded_rows']] = False
-            design_filtered = design[mask].reset_index(drop=True)
-            response_filtered = response_data[mask]
-        else:
-            design_filtered = design
-            response_filtered = response_data
-        
-        analysis = ANOVAAnalysis(
-            design=design_filtered, response=response_filtered,
-            factors=factors, response_name=selected_response
-        )
-        
         results = analysis.fit(
             model_terms=current_terms, enforce_hierarchy_flag=enforce_hierarchy
         )
-        
+
         if getattr(analysis, "rename_map", {}):
             renamed = ", ".join([f"{old} → {new}" for old, new in analysis.rename_map.items()])
             st.warning(f"Factor names renamed: {renamed}")
@@ -310,31 +353,14 @@ with st.spinner(f"Fitting model for {selected_response}..."):
         if 'fitted_models' not in st.session_state:
             st.session_state['fitted_models'] = {}
         st.session_state['fitted_models'][selected_response] = results
-        
-        # Store analysis object for stepwise regression
+
+        # Store analysis object for automatic model selection
         st.session_state[f'analysis_{selected_response}'] = analysis
-        
+
     except Exception as e:
         st.error(f"Model fitting failed: {e}")
         st.exception(e)
         st.stop()
-
-# ==== STEPWISE REGRESSION (BIC-based Automatic Model Selection) ====
-# Display AFTER model fitting so we have the analysis object
-st.divider()
-stepwise_results = display_stepwise_button(
-    factors=factors,
-    anova_analysis=analysis,
-    key_prefix=f"stepwise_{selected_response}"
-)
-
-# If stepwise returned results, update model terms
-if stepwise_results is not None:
-    st.session_state['model_terms_per_response'][selected_response] = stepwise_results.final_terms
-    invalidate_downstream_state(from_step=5)
-    st.rerun()
-
-st.divider()
 
 st.subheader("📈 Analysis Results")
 
