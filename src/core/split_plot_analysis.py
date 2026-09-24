@@ -37,6 +37,79 @@ from src.core.analysis_base import (
 )
 
 
+def _compute_observation_usage(
+    data: pd.DataFrame,
+    fitted_model,
+    response_name: str,
+) -> Dict:
+    """
+    Reconstruct which run-level observations the fitted model actually used.
+
+    ``ols`` auto-drops rows with missing response values, so the number of
+    residuals can be smaller than the number of rows in *data*.  The fitted
+    model's row labels are the authoritative record of what was used.
+
+    Returns
+    -------
+    Dict
+        ``n_obs_total``, ``n_obs_used``, ``n_obs_excluded``,
+        ``excluded_obs_labels``, ``used_row_indices`` (positions into *data*),
+        and ``used_response`` (values used, aligned with residuals).
+    """
+    n_obs_total = int(len(data))
+    used_labels: Optional[list] = None
+    try:
+        row_labels = getattr(getattr(fitted_model, 'model', None), 'data', None)
+        if row_labels is not None and row_labels.row_labels is not None:
+            used_labels = list(row_labels.row_labels)
+    except Exception:
+        used_labels = None
+
+    if used_labels is None:
+        response_arr = pd.to_numeric(data[response_name], errors='coerce').to_numpy()
+        used_indices = np.flatnonzero(pd.notna(response_arr)).astype(np.int64)
+    else:
+        positions = data.index.get_indexer(used_labels)
+        used_indices = np.asarray(
+            [p for p in positions if p >= 0], dtype=np.int64
+        )
+
+    used_indices = np.unique(used_indices)
+    n_obs_used = int(len(used_indices))
+    n_obs_excluded = max(n_obs_total - n_obs_used, 0)
+
+    excluded_indices = [
+        i for i in range(n_obs_total) if i not in set(used_indices.tolist())
+    ]
+    excluded_labels = []
+    for pos in excluded_indices:
+        if 0 <= pos < len(data):
+            row = data.iloc[pos]
+            if 'RunOrder' in data.columns and pd.notna(row['RunOrder']):
+                excluded_labels.append(f"Run {int(row['RunOrder'])}")
+            elif 'StdOrder' in data.columns and pd.notna(row['StdOrder']):
+                excluded_labels.append(f"StdOrder {int(row['StdOrder'])}")
+            else:
+                excluded_labels.append(f"Row {pos + 1}")
+        else:
+            excluded_labels.append(f"Row {pos + 1}")
+
+    used_response = None
+    if n_obs_used > 0:
+        used_response = pd.to_numeric(
+            data[response_name], errors='coerce'
+        ).to_numpy(dtype=float)[used_indices]
+
+    return {
+        'n_obs_total': n_obs_total,
+        'n_obs_used': n_obs_used,
+        'n_obs_excluded': n_obs_excluded,
+        'excluded_obs_labels': excluded_labels,
+        'used_row_indices': used_indices,
+        'used_response': used_response,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Term classification helpers
 # ---------------------------------------------------------------------------
@@ -654,6 +727,13 @@ def fit_split_plot_anova(
         anova_table, effect_estimates, block_factor_names=block_names
     )
 
+    # ------------------------------------------------------------------
+    # Observation usage: ols() auto-drops rows with missing response values,
+    # so record exactly what the prediction model used and which rows were
+    # excluded (for the missing-value banner and run-level diagnostics).
+    # ------------------------------------------------------------------
+    usage = _compute_observation_usage(data, prediction_model, response_name)
+
     return ANOVAResults(
         anova_table=anova_table,
         effect_estimates=effect_estimates,
@@ -669,4 +749,10 @@ def fit_split_plot_anova(
         rmse=rmse,
         coefficient_significance=coefficient_significance,
         anova_effect_summary=anova_effect_summary,
+        n_obs_total=usage["n_obs_total"],
+        n_obs_used=usage["n_obs_used"],
+        n_obs_excluded=usage["n_obs_excluded"],
+        excluded_obs_labels=usage["excluded_obs_labels"],
+        used_row_indices=usage["used_row_indices"],
+        used_response=usage["used_response"],
     )

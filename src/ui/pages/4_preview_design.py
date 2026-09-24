@@ -23,6 +23,7 @@ from src.ui.utils.state_management import (
 )
 from src.core.coding import DesignSpace
 from src.core.factors import Factor
+from src.core.selection import trim_non_estimable_terms
 from src.ui.utils.csv_parser import generate_doe_csv
 from src.ui.utils.response_definitions import (
     validate_response_name,
@@ -477,6 +478,43 @@ if st.session_state.get('design') is None:
 else:
     design = st.session_state['design']
     metadata = st.session_state.get('design_metadata', {})
+
+    # Authoritative estimability hand-off: the design's *observed* per-factor
+    # level counts decide which quadratic terms are estimable.  A factor seen
+    # at only two levels produces a squared column identical to the intercept,
+    # so its quadratic cannot be estimated no matter which design type
+    # generated the data (generated or imported CSV alike).  Remove them from
+    # the analysis model now so preview/export/analysis all show the same
+    # estimable model.
+    _model_terms_now = st.session_state.get('model_terms') or []
+    if _model_terms_now:
+        _design_levels = {
+            f.name: int(design[f.name].nunique())
+            for f in factors
+            if f.name in design.columns
+        }
+        _kept, _removed = trim_non_estimable_terms(
+            _model_terms_now, factors, _design_levels
+        )
+        if _removed:
+            st.session_state['model_terms'] = _kept
+            st.warning(
+                "Removed non-estimable quadratic term(s): "
+                + ", ".join(f"`{t}`" for t in _removed)
+                + ". The design observes these factors at fewer than three "
+                "levels, so curvature (quadratic) terms are aliased with the "
+                "intercept and cannot be estimated."
+            )
+        _per_response = st.session_state.get('model_terms_per_response')
+        if isinstance(_per_response, dict):
+            for _resp, _terms in list(_per_response.items()):
+                if not _terms:
+                    continue
+                _per_kept, _per_removed = trim_non_estimable_terms(
+                    list(_terms), factors, _design_levels
+                )
+                if _per_removed:
+                    _per_response[_resp] = _per_kept
     
     st.success(f"✓ Design generated ({len(design)} runs)")
     

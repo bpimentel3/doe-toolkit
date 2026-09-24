@@ -20,11 +20,13 @@ import pandas as pd
 from scipy import stats
 import statsmodels.api as sm
 from statsmodels.formula.api import ols, mixedlm
+import patsy
 
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
 from src.core.coding import DesignSpace
 from src.core.analysis_base import (
     ANOVAResults,
+    _normalize_term,
     build_anova_effect_summary,
     build_coefficient_significance,
     enforce_hierarchy,
@@ -183,12 +185,14 @@ class ANOVAAnalysis:
         factors: List[Factor],
         response_name: str = "Response",
         is_split_plot: Optional[bool] = None,
-        block_as_random: bool = False
+        block_as_random: bool = False,
+        include_block_in_prediction: bool = False,
     ):
         self.factors = factors
         self.response = np.array(response)
         self.response_name = response_name
         self.block_as_random = block_as_random
+        self.include_block_in_prediction = include_block_in_prediction
 
         # Build the design space and encode to coded [-1, +1] space for the
         # primary analysis data.  The incoming ``design`` may be in natural
@@ -219,6 +223,7 @@ class ANOVAAnalysis:
 
         self.current_model = None
         self.current_results = None
+        self.excluded_term_reasons: List[Tuple[str, str]] = []
     
     def fit(self, model_terms: List[str], enforce_hierarchy_flag: bool = True) -> ANOVAResults:
         """Fit ANOVA model. Use I(A**2) notation for quadratic terms."""
@@ -233,6 +238,44 @@ class ANOVAAnalysis:
             
             model_terms = complete_terms
         
+        self.current_model = model_terms
+        pruned_terms, excluded = self._prune_degenerate_terms(model_terms)
+        self.excluded_term_reasons = list(excluded)
+        if excluded:
+            for term, reason in excluded:
+                warnings.warn(f"Excluded term '{term}': {reason}")
+        model_terms = pruned_terms
+
+        # Defensive hierarchy cascade: pruning may have removed a parent main
+        # effect (e.g. a factor constant across runs).  Any surviving
+        # interaction or quadratic built on that parent is itself
+        # non-estimable, so drop it too rather than leave an orphan that
+        # breaks hierarchical completeness.  Iterate because dropping an
+        # interaction can orphan a higher-order term.
+        kept_tail = [t for t in model_terms if t != '1']
+        orphaned = []
+        while True:
+            removed_any = False
+            for term in list(kept_tail):
+                factor_list, operator = parse_model_term(term)
+                if operator not in ('*', '**'):
+                    continue
+                siblings = set(kept_tail) - {term}
+                missing = [p for p in factor_list if p not in siblings]
+                if missing:
+                    kept_tail.remove(term)
+                    orphaned.append(
+                        (term, f"hierarchical parent '{missing[0]}' pruned as non-estimable")
+                    )
+                    removed_any = True
+            if not removed_any:
+                break
+        if orphaned:
+            excluded.extend(orphaned)
+            self.excluded_term_reasons = list(excluded)
+            for term, reason in orphaned:
+                warnings.warn(f"Excluded term '{term}': {reason}")
+            model_terms = ['1'] + kept_tail
         self.current_model = model_terms
         self._validate_degrees_of_freedom(model_terms)
         if self.design_structure['is_split_plot']:
@@ -296,6 +339,195 @@ class ANOVAAnalysis:
         if self._has_transform_terms(model_terms):
             return self.natural_data
         return self.data
+
+    def _prune_degenerate_terms(
+        self, model_terms: List[str]
+    ) -> Tuple[List[str], List[Tuple[str, str]]]:
+        """
+        Remove model terms whose design columns carry no estimable information.
+
+        The same design matrix patsy will build for the fit is inspected via
+        ``patsy.dmatrix`` (identical data frame and term notation), so the
+        check reflects exactly the columns the regression would use.  Terms are
+        dropped, with a recorded reason, when they are:
+
+        - **constant** — a single value across all runs.  A quadratic on a
+          two-level factor produces a column of all ones (identical to the
+          intercept); a categorical factor observed at one level produces an
+          all-zero dummy column.  Both are unidentifiable.
+        - **perfectly aliased** — every column of one term equals every column
+          of another kept term (exact linear dependence).
+        - **other rank defect** — the remaining columns are linearly dependent
+          even though no single term is constant or an exact duplicate.  The
+          last-added non-intercept term that resolves the deficit is dropped.
+
+        Removals are iterative: after each drop the matrix is rebuilt, so
+        multiple degenerate terms are removed in successive passes.  Never
+        drops ``'1'``.  On any unexpected patsy/build failure the pruning
+        stops conservatively and returns the terms kept so far.
+
+        Returns ``(kept_terms, [(dropped_term, reason), ...])``.
+        """
+        terms = [t for t in model_terms if t != '1']
+        if not terms:
+            return ['1'], []
+        fit_data = self._select_fit_data(terms)
+        kept = list(terms)
+        excluded: List[Tuple[str, str]] = []
+
+        def build_matrix(term_list: List[str]):
+            formula_rhs = ' + '.join(self._wrap_categorical_terms(term_list))
+            return patsy.dmatrix(formula_rhs, fit_data, return_type='dataframe')
+
+        def near_constant(column) -> bool:
+            return bool(np.allclose(column.iloc[0], column))
+
+        def prune_key(name: str) -> str:
+            # patsy reports interaction terms in ``term_names`` with ':'
+            # separators (``feed_rate:catalyst``) while the wrapped formula
+            # side uses '*' (``feed_rate*catalyst``).  Canonicalise both sides
+            # so term->slice lookups match for interaction-bearing models.
+            return _normalize_term(name).replace('*', ':')
+
+        while kept:
+            try:
+                design = build_matrix(kept)
+            except Exception:
+                break
+            info = design.design_info
+            term_names = list(info.term_names)
+            # NOTE: ``len(term_names)`` intentionally is NOT required to equal
+            # ``len(kept) + 1``: patsy's ``*`` syntax expands an interaction
+            # (``A*B``) into its parent main effects, so a dangling
+            # interaction after a parent was pruned yields extra auto-added
+            # term names.  Per-term slice lookup below is the real guard; a
+            # dropped/renamed term shows up as a missing key and stops
+            # conservatively.
+            if not np.all(np.isfinite(np.asarray(design))):
+                # Non-finite columns (e.g. np.log(0) or I(1/0) outside the
+                # transform domain) are a data problem, not a degeneracy: let
+                # the regular fit raise its natural error/warning rather than
+                # silently dropping the requested term.
+                break
+
+            # Map each kept term to its patsy slice by matching the wrapped
+            # formula name -- patsy may reorder terms (categoricals first), so
+            # a positional zip would misalign the slices.
+            wrapped = self._wrap_categorical_terms(kept)
+            raw_to_str = dict(zip(kept, wrapped))
+            str_to_slice = {
+                prune_key(name): info.term_slices[t]
+                for t, name in zip(info.terms[1:], info.term_names[1:])
+            }
+            try:
+                slices = [
+                    str_to_slice[prune_key(raw_to_str[term])]
+                    for term in kept
+                ]
+            except KeyError:
+                break
+
+            # 1) Constant / intercept-aliased columns, or terms that carry no
+            #    design columns at all (e.g. a categorical factor observed at
+            #    only its reference level).
+            drop_term = None
+            drop_reason = None
+            for term, sl in zip(kept, slices):
+                cols = list(design.columns[sl])
+                if not cols:
+                    drop_term = term
+                    drop_reason = "no estimable columns — factor observed at a single level"
+                    break
+                if all(near_constant(design[col]) for col in cols):
+                    drop_term = term
+                    if all(np.all(np.asarray(design[col]) == 1.0) for col in cols):
+                        drop_reason = (
+                            f"constant column — identical to the intercept "
+                            f"(factor observed at a single value across runs)"
+                        )
+                    else:
+                        drop_reason = (
+                            "constant column — no variation across runs "
+                            "(aliased with the intercept)"
+                        )
+                    break
+            if drop_term is not None:
+                if len(kept) == 1:
+                    # Sole remaining term is unusable; keep it rather than
+                    # reducing the model to the intercept.
+                    break
+                kept.remove(drop_term)
+                excluded.append((drop_term, drop_reason))
+                continue
+
+            # 2) Exact duplication between terms.
+            duplicate = None
+            duplicate_reason = None
+            for i, (term_a, sl_a) in enumerate(zip(kept, slices)):
+                if duplicate is not None:
+                    break
+                for term_b, sl_b in list(zip(kept, slices))[i + 1:]:
+                    cols_a = list(design.columns[sl_a])
+                    cols_b = list(design.columns[sl_b])
+                    if len(cols_a) == len(cols_b) and all(
+                        np.array_equal(design[a], design[b])
+                        for a, b in zip(cols_a, cols_b)
+                    ):
+                        duplicate = term_b
+                        duplicate_reason = f"perfectly aliased with '{term_a}'"
+                        break
+            if duplicate is not None:
+                kept.remove(duplicate)
+                excluded.append((duplicate, duplicate_reason))
+                continue
+
+            # 3) General rank deficiency.
+            col_positions = sorted(
+                int(i)
+                for sl in slices
+                for i in range(design.shape[1])[sl]
+            )
+            matrix = np.asarray(design.iloc[:, col_positions])
+            if np.linalg.matrix_rank(matrix) == matrix.shape[1]:
+                break
+            resolved = None
+            for candidate in reversed(kept):
+                trial = [t for t in kept if t != candidate]
+                try:
+                    trial_design = build_matrix(trial)
+                except Exception:
+                    continue
+                data = trial_design.design_info
+                # No ``len(term_names) == len(trial) + 1`` requirement here
+                # either — ``*`` expands parents — per-term lookup governs.
+                trial_wrapped = self._wrap_categorical_terms(trial)
+                trial_raw_to_str = dict(zip(trial, trial_wrapped))
+                trial_str_to_slice = {
+                    prune_key(name): data.term_slices[t]
+                    for t, name in zip(data.terms[1:], data.term_names[1:])
+                }
+                try:
+                    trial_slices = [
+                        trial_str_to_slice[prune_key(trial_raw_to_str[term])]
+                        for term in trial
+                    ]
+                except KeyError:
+                    continue
+                trial_cols = sorted(
+                    int(i)
+                    for sl in trial_slices
+                    for i in range(trial_design.shape[1])[sl]
+                )
+                trial_matrix = np.asarray(trial_design.iloc[:, trial_cols])
+                if np.linalg.matrix_rank(trial_matrix) == trial_matrix.shape[1]:
+                    resolved = candidate
+                    break
+            target = resolved if resolved is not None else kept[-1]
+            kept.remove(target)
+            excluded.append(
+                (target, "linearly dependent on the remaining model columns")
+            )
+        return ['1'] + kept, excluded
 
     def _fit_fixed_effects_model(self, model_terms: List[str]) -> ANOVAResults:
         """Fit fixed effects ANOVA."""
@@ -397,8 +629,99 @@ class ANOVAAnalysis:
         """
         return re.sub(r'C\(([^()]*)\)', r'\1', label)
 
+    def _observation_usage(self, fitted_model, fit_data: pd.DataFrame) -> Dict[str, object]:
+        """
+        Reconstruct which observations the fitted model actually used.
+
+        ``ols``/``mixedlm`` auto-drop rows with missing values in any formula
+        variable, so ``len(fitted_model.resid)`` can be smaller than the
+        number of rows in the analysis frame.  The fitted model's row labels
+        are the authoritative record of what was used; the excluded rows are
+        everything else in the frame.
+
+        Returns
+        -------
+        Dict[str, object]
+            ``n_obs_total``, ``n_obs_used``, ``n_obs_excluded``,
+            ``excluded_obs_labels``, ``used_row_indices`` (positions into
+            ``fit_data``), and ``used_response`` (observations used, aligned
+            with ``residuals``/``fitted_values``).
+        """
+        n_obs_total = int(len(fit_data))
+        used_labels: Optional[List[object]] = None
+        try:
+            row_labels = getattr(
+                getattr(fitted_model, 'model', None), 'data', None
+            )
+            if row_labels is not None and row_labels.row_labels is not None:
+                used_labels = list(row_labels.row_labels)
+        except Exception:
+            used_labels = None
+
+        if used_labels is None:
+            # Fallback (e.g. exotic result objects): derive usage from the
+            # response's own missing-value mask.
+            response_arr = fit_data[self.response_name].to_numpy()
+            used_indices = np.flatnonzero(
+                pd.notna(response_arr)
+            ).astype(np.int64)
+        else:
+            positions = fit_data.index.get_indexer(used_labels)
+            used_indices = np.asarray(
+                [p for p in positions if p >= 0], dtype=np.int64
+            )
+
+        used_indices = np.unique(used_indices)
+        n_obs_used = int(len(used_indices))
+        n_obs_excluded = max(n_obs_total - n_obs_used, 0)
+
+        excluded_indices = [
+            i for i in range(n_obs_total) if i not in set(used_indices.tolist())
+        ]
+        excluded_obs_labels = self._format_excluded_obs_labels(
+            excluded_indices
+        )
+
+        used_response = None
+        if n_obs_used > 0:
+            used_response = pd.to_numeric(
+                fit_data[self.response_name], errors='coerce'
+            ).to_numpy(dtype=float)[used_indices]
+
+        return {
+            'n_obs_total': n_obs_total,
+            'n_obs_used': n_obs_used,
+            'n_obs_excluded': n_obs_excluded,
+            'excluded_obs_labels': excluded_obs_labels,
+            'used_row_indices': used_indices,
+            'used_response': used_response,
+        }
+
+    def _format_excluded_obs_labels(self, excluded_indices: List[int]) -> List[str]:
+        """
+        Format stable, human-readable identifiers for excluded observations.
+
+        Prefers run numbers carried in the analysis frame (``RunOrder`` then
+        ``StdOrder``), falling back to 1-based row positions.
+        """
+        labels = []
+        for pos in excluded_indices:
+            if 0 <= pos < len(self.data):
+                row = self.data.iloc[pos]
+                if 'RunOrder' in self.data.columns and pd.notna(row['RunOrder']):
+                    labels.append(f"Run {int(row['RunOrder'])}")
+                elif 'StdOrder' in self.data.columns and pd.notna(row['StdOrder']):
+                    labels.append(f"StdOrder {int(row['StdOrder'])}")
+                else:
+                    labels.append(f"Row {pos + 1}")
+            else:
+                labels.append(f"Row {pos + 1}")
+        return labels
+
     def _build_results_object(self, fitted_model, model_terms: List[str], is_split_plot: bool) -> ANOVAResults:
         """Build results from fitted model."""
+        fit_data = self._select_fit_data(model_terms)
+        usage = self._observation_usage(fitted_model, fit_data)
         try:
             if hasattr(fitted_model, 'anova_table'):
                 anova_table = fitted_model.anova_table()
@@ -464,7 +787,25 @@ class ANOVAAnalysis:
         anova_effect_summary = build_anova_effect_summary(
             anova_table, effect_estimates, block_factor_names=block_names
         )
-        
+
+        block_mean_shift = self._block_mean_shift_if_excluded(fitted_model)
+        if block_mean_shift != 0.0:
+            # Average the fitted equation over blocks: add the size-weighted
+            # mean block offset to the intercept so predictions (from either
+            # effect_estimates or the statsmodels model) are no longer tied to
+            # a specific block's reference level.  The reference block
+            # contributes 0 offset and each non-reference block its dummy
+            # coefficient, so the reference-level prediction becomes the
+            # block-average prediction.
+            if 'Intercept' in effect_estimates.index:
+                effect_estimates.loc['Intercept', 'Coefficient'] = (
+                    effect_estimates.loc['Intercept', 'Coefficient'] + block_mean_shift
+                )
+            exog_names = list(getattr(fitted_model.model, 'exog_names', ()) or ())
+            params_arr = getattr(getattr(fitted_model, '_results', None), 'params', None)
+            if isinstance(params_arr, np.ndarray) and 'Intercept' in exog_names:
+                params_arr[exog_names.index('Intercept')] += block_mean_shift
+
         return ANOVAResults(
             anova_table=anova_table,
             effect_estimates=effect_estimates,
@@ -480,7 +821,53 @@ class ANOVAAnalysis:
             rmse=rmse,
             coefficient_significance=coefficient_significance,
             anova_effect_summary=anova_effect_summary,
+            block_mean_shift=block_mean_shift,
+            blocks_in_predictions=(block_mean_shift == 0.0),
+            n_obs_total=usage['n_obs_total'],
+            n_obs_used=usage['n_obs_used'],
+            n_obs_excluded=usage['n_obs_excluded'],
+            excluded_obs_labels=usage['excluded_obs_labels'],
+            used_row_indices=usage['used_row_indices'],
+            used_response=usage['used_response'],
         )
+
+    def _block_mean_shift_if_excluded(self, fitted_model) -> float:
+        """
+        Size-weighted mean block offset, or 0 when Block stays predictive.
+
+        Returns a non-zero shift exactly when the design is blocked with a
+        fixed Block effect and predictive use of Block is not requested.  The
+        offset is the size-weighted mean (over blocks) of each block's fitted
+        dummy contribution: the reference block contributes 0, every non-
+        reference block its ``Block[T.level]`` coefficient.  Subtracting it
+        from the intercept makes the prediction the block-average response,
+        which is independent of whichever level was chosen as the reference.
+        """
+        if not (
+            self.design_structure.get('has_blocking') and not self.block_as_random
+        ):
+            return 0.0
+        if self.include_block_in_prediction:
+            return 0.0
+        model = getattr(fitted_model, 'model', None)
+        frame = getattr(getattr(model, 'data', None), 'frame', None)
+        if frame is None or 'Block' not in frame.columns:
+            return 0.0
+        block = frame['Block']
+        unique = block.unique()
+        if len(unique) < 2:
+            return 0.0
+        sizes = frame.groupby(block, sort=False).size()
+        total = int(sizes.sum())
+        if total <= 0:
+            return 0.0
+        contribution = pd.Series(0.0, index=sizes.index, dtype=float)
+        params = pd.Series(fitted_model.params)
+        for key in params.index:
+            match = re.match(r"^Block\[T\.(.*)\]$", str(key))
+            if match and match.group(1) in contribution.index:
+                contribution.loc[match.group(1)] = float(params[key])
+        return float((contribution * sizes).sum() / total)
     
     def _compute_diagnostics(self, residuals: np.ndarray, fitted_values: np.ndarray) -> Dict:
         """Compute diagnostics."""
