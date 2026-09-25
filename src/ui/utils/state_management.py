@@ -515,7 +515,7 @@ def create_project_file() -> str:
     
     # Build project data
     project = {
-        'version': '0.2.1',
+        'version': '0.3.0',
         'created': datetime.now().isoformat(),
         'factors': factors_data,
         'design_type': st.session_state.get('design_type'),

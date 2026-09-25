@@ -58,7 +58,7 @@ with st.sidebar:
         - Response Optimization
         
         **License:** MIT  
-        **Version:** 0.2.1
+        **Version:** 0.3.0
         """)
     
     with st.expander("🆘 Get Help"):
@@ -239,7 +239,7 @@ with st.expander("📚 Example Workflows"):
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: gray; font-size: 0.9em;'>
-    DOE-Toolkit. Brian Pimentel, 2026. V.0.2.0 | MIT License | 
+    DOE-Toolkit. Brian Pimentel, 2026. V.0.3.0 | MIT License | 
     <a href='https://github.com/bpimentel3/doe-toolkit'>GitHub</a>
 </div>
 """, unsafe_allow_html=True)
