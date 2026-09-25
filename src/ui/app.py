@@ -73,6 +73,7 @@ with st.sidebar:
         - Download designs as CSV at any step
         - Use hierarchy enforcement for stable models
         """)
+        st.page_link("pages/0_help.py", label="📖 In-app Help & Docs")
 
 # Main content area
 st.title("🔬 DOE Toolkit")

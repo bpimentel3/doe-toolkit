@@ -52,6 +52,12 @@ Copy-Item -Force "DOE-Toolkit.bat" "$OutputDir\DOE-Toolkit.bat"
 Write-Host "      Done." -ForegroundColor Green
 Write-Host ""
 
+# ── Re-copy in-app docs ────────────────────────────────────────────────
+if (Test-Path "docs") {
+    Remove-Item -Recurse -Force "$OutputDir\docs" -ErrorAction SilentlyContinue
+    Copy-Item -Recurse -Force "docs" "$OutputDir\docs"
+}
+
 # ── Summary ───────────────────────────────────────────────────────────
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host " QUICK REBUILD SUCCESSFUL" -ForegroundColor Green
