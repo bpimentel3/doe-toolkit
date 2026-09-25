@@ -63,7 +63,8 @@ Resolution indicates the degree of confounding:
 
 **Resolution V:**
 - Main effects clear
-- 2-factor interactions clear (not confounded with other 2FI)
+- 2-factor interactions clear (not confounded with other 2FI), assuming
+  higher-order interactions are negligible
 - 2-factor interactions confounded with 3-factor interactions
 - Excellent for estimating main effects and 2FI
 
@@ -82,10 +83,12 @@ Resolution R = minimum word length in defining relation (excluding I)
 | 7 | 3 | 16 | IV | Large screening studies |
 | 8 | 4 | 16 | IV | Very large screening |
 
-**Selection Rules:**
-1. For k ≤ 5: Use Resolution V (full 2FI estimation)
-2. For k = 6-7: Use Resolution IV (main effects + some 2FI)
-3. For k ≥ 8: Use Resolution III or IV for screening
+**Common practice:**
+- Small characterization studies often target Resolution V, so all 2FI are estimable
+- Screening studies frequently use Resolution IV; main effects stay clear and
+  the run count stays moderate
+- Larger screening studies often use Resolution III or IV when the run count
+  is constrained
 
 ## Generator Selection
 
@@ -114,9 +117,17 @@ The complete defining relation includes all products of generators.
 Users can specify custom generators for special purposes:
 
 **Requirements:**
-1. Each generator must involve k-p factors
-2. Generators should be independent
-3. Higher word length → higher resolution
+1. Each generator must define one of the **generated** factors (the last p
+   factors; a rule enforced by the validator)
+2. The right-hand side may reference only the **base** factors (the first
+   k − p factors)
+3. Generators must be **independent** (no word is a multiple of another)
+4. The generator set must achieve the requested resolution (or the highest
+   resolution available when none is specified)
+
+There is **no requirement that each generator involve k − p factors**: the
+standard tables below include generators of length 2–5 with k − p ranging
+from 3 to 6, and word length is only what determines resolution.
 
 **Example Custom Generator:**
 For a 2^(6-2) design emphasizing factors A and B:
@@ -160,42 +171,36 @@ E × ABCDE = ABCD (E cancels)
 AB × ABCDE = CDE (A and B cancel)
 ```
 
-### Computational Complexity
-
-**Time Complexity:**
-- Design generation: O(2^(k-p) × k)
-- Alias calculation: O(2^p × k^2)
-  - Must evaluate all 2^p words in defining relation
-  - For each of O(k^2) effects
-
-**Space Complexity:**
-- O(2^(k-p) × k) for design matrix
-- O(2^p) for defining relation
-- O(k^2) for alias structure
-
 ### Example Calculation
 
 **Problem:** Create 2^(5-1) design with E = ABCD
 
-**Step 1: Generate base factorial for A, B, C, D**
-```
-Run  A   B   C   D
-1   -1  -1  -1  -1
-2   +1  -1  -1  -1
-3   -1  +1  -1  -1
-...
-16  +1  +1  +1  +1
-```
+**Step 1–2: Build the coded grid and apply the generator**
+Generation happens on the coded `{-1, +1}` grid (first factor varies slowest),
+then E = A × B × C × D is computed element-wise:
 
-**Step 2: Calculate E = A × B × C × D**
 ```
 Run  A   B   C   D   E
-1   -1  -1  -1  -1  +1  ((-1)×(-1)×(-1)×(-1) = +1)
-2   +1  -1  -1  -1  -1  ((+1)×(-1)×(-1)×(-1) = -1)
-3   -1  +1  -1  -1  -1
-...
+1   -1  -1  -1  -1  +1
+2   -1  -1  -1  +1  -1
+3   -1  -1  +1  -1  -1
+4   -1  -1  +1  +1  +1
+5   -1  +1  -1  -1  -1
+6   -1  +1  -1  +1  +1
+7   -1  +1  +1  -1  +1
+8   -1  +1  +1  +1  -1
+9   +1  -1  -1  -1  -1
+10  +1  -1  -1  +1  +1
+11  +1  -1  +1  -1  +1
+12  +1  -1  +1  +1  -1
+13  +1  +1  -1  -1  +1
+14  +1  +1  -1  +1  -1
+15  +1  +1  +1  -1  -1
 16  +1  +1  +1  +1  +1
 ```
+
+Run 1 checks the arithmetic: (−1)×(−1)×(−1)×(−1) = +1; run 2:
+(+1)×(−1)×(−1)×(−1) = −1.
 
 **Step 3: Defining Relation**
 ```
@@ -203,6 +208,9 @@ I = ABCDE
 ```
 
 **Step 4: Alias Structure**
+
+The complete alias structure (as computed by the alias engine) is:
+
 ```
 A: aliased with BCDE
 B: aliased with ACDE
@@ -222,7 +230,37 @@ CE: aliased with ABD
 DE: aliased with ABC
 ```
 
-Resolution = 5 (minimum word length = 5)
+**Step 5: Returned design (natural units)**
+
+The design returned to the user is expressed in natural factor units:
+continuous factors are decoded from the coded grid above to their natural
+levels (two-level discrete-numeric factors are restored to their declared
+levels), and `StdOrder` / `RunOrder` columns are added. For
+A = Temperature [150, 200], B = Pressure [50, 100],
+C = Time [10, 20], D = Rate [1, 2], E = Catalyst [0.5, 1.5] the actual output
+with `randomize=False` is:
+
+```
+StdOrder  RunOrder  Temperature  Pressure  Time  Rate  Catalyst
+       1         1        150.0      50.0  10.0  1.0      1.5
+       2         2        150.0      50.0  10.0  2.0      0.5
+       3         3        150.0      50.0  20.0  1.0      0.5
+       4         4        150.0      50.0  20.0  2.0      1.5
+       5         5        150.0     100.0  10.0  1.0      0.5
+       6         6        150.0     100.0  10.0  2.0      1.5
+       7         7        150.0     100.0  20.0  1.0      1.5
+       8         8        150.0     100.0  20.0  2.0      0.5
+       9         9        200.0      50.0  10.0  1.0      0.5
+      10        10        200.0      50.0  10.0  2.0      1.5
+      11        11        200.0      50.0  20.0  1.0      1.5
+      12        12        200.0      50.0  20.0  2.0      0.5
+      13        13        200.0     100.0  10.0  1.0      1.5
+      14        14        200.0     100.0  10.0  2.0      0.5
+      15        15        200.0     100.0  20.0  1.0      0.5
+      16        16        200.0     100.0  20.0  2.0      1.5
+```
+
+Resolution = 5 (minimum word length = 5).
 
 ## Analysis Considerations
 
@@ -330,6 +368,9 @@ Reverse signs of one factor to de-alias specific interactions.
 
 ## Standard Generator Tables
 
+The generator examples below reflect the current validated defaults used by
+the toolkit and may evolve in future releases.
+
 ### 2^(k-1) Designs (Half-Fractions)
 
 | k | Generator | Resolution | Runs |
@@ -352,7 +393,7 @@ Reverse signs of one factor to de-alias specific interactions.
 | k | Generators | Resolution | Runs |
 |---|------------|-----------|------|
 | 7 | E=ABC, F=BCD, G=ACD | IV | 16 |
-| 8 | F=ABC, G=ABD, H=ACDE | IV | 32 |
+| 8 | F=ABC, G=ABD, H=ABE | IV | 32 |
 
 ## References
 

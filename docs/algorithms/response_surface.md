@@ -82,20 +82,31 @@ n_factorial = 2³ = 8
 
 Makes design matrix columns orthogonal (uncorrelated).
 
-**Approximate formula:**
+**Formula (standard Box–Hunter condition, used by the code):**
 ```
-α² = √[nf(√(nf + nc) + √(na + nc)) / (2k)]
+α⁴ = nf × (√(nf + 2k + nc) − √nf)² / 4
 ```
 
 Where:
 - nf = number of factorial points
-- na = number of axial points
+- 2k = number of axial points
 - nc = number of center points
 
 **Properties:**
+- Makes the centered model matrix (linear terms, two-factor interactions,
+  centered quadratics) orthogonal — near-zero off-diagonal correlation
 - Simplifies calculation of regression coefficients
 - Reduces correlation between effects
 - Good for analysis
+
+**Examples:**
+```
+k = 2, nc = 5:  α⁴ = 4(√(4 + 9) − √4)²/4 = (√13 − 2)²  → α = 1.2671
+k = 3, nc = 6:  α = 1.5246
+```
+
+> If `nc = 0` an orthogonal design is not possible; the code falls back to
+> the rotatable alpha and issues a warning.
 
 **3. Face-Centered Design (α = 1)**
 
@@ -109,31 +120,43 @@ Places axial points on the faces of the design cube.
 
 ### Example: 3-Factor Rotatable CCD
 
-**Design:**
+**Design (coded view; actual output order):**
 ```
-Point Type    A    B    C
-─────────────────────────
-Factorial    -1   -1   -1
-Factorial    +1   -1   -1
-Factorial    -1   +1   -1
-Factorial    +1   +1   -1
-Factorial    -1   -1   +1
-Factorial    +1   -1   +1
-Factorial    -1   +1   +1
-Factorial    +1   +1   +1
-Axial      -1.68   0    0
-Axial      +1.68   0    0
-Axial         0 -1.68   0
-Axial         0 +1.68   0
-Axial         0    0 -1.68
-Axial         0    0 +1.68
-Center        0    0    0
-Center        0    0    0
-...
-Center        0    0    0   (6 total)
+Point Type    A     B     C
+────────────────────────────
+Factorial    -1    -1    -1
+Factorial    -1    -1    +1
+Factorial    -1    +1    -1
+Factorial    -1    +1    +1
+Factorial    +1    -1    -1
+Factorial    +1    -1    +1
+Factorial    +1    +1    -1
+Factorial    +1    +1    +1
+Axial      +1.68    0     0
+Axial      -1.68    0     0
+Axial         0  +1.68    0
+Axial         0  -1.68    0
+Axial         0     0  +1.68
+Axial         0     0  -1.68
+Center        0     0     0
+Center        0     0     0
+Center        0     0     0
+Center        0     0     0
+Center        0     0     0
+Center        0     0     0
 ```
 
+The factorial points are the full 2³ grid (first factor varies slowest),
+the axial points run through each factor (+, −), and the six center points
+are appended last. α = 8^(1/4) = 1.682.
+
 **Total runs:** 8 + 6 + 6 = 20
+
+> The table above is the **internal coded** structure. On return the CCD
+> generator decodes every continuous factor to natural units (see
+> "Decoding to Actual Values" below), so the actual DataFrame holds values
+> like 150.0/200.0 rather than −1/+1, alongside `StdOrder`, `RunOrder`, and
+> `PointType` columns.
 
 ### Run Count Formula
 
@@ -149,17 +172,18 @@ Where:
 - p = fraction (for 1/2^p fraction)
 - nc = number of center points
 
-**Examples:**
+**Examples** (center counts are the code defaults):
 
 | k | Factorial | Axial | Center | Total |
 |---|-----------|-------|--------|-------|
 | 2 | 4 | 4 | 5 | 13 |
 | 3 | 8 | 6 | 6 | 20 |
 | 4 | 16 | 8 | 7 | 31 |
-| 5 | 32 | 10 | 10 | 52 |
-| 5* | 16 | 10 | 10 | 36 |
+| 5 | 32 | 10 | 6 | 48 |
+| 5* | 16 | 10 | 6 | 32 |
+| 6 | 64 | 12 | 6 | 82 |
 
-*Using 1/2 fraction for factorial portion
+*Using 1/2 fraction for the factorial portion
 
 ## Box-Behnken Design (BBD)
 
@@ -177,31 +201,33 @@ For each pair of factors (i, j):
 - Create 2² = 4 combinations: (±1, ±1)
 - Set all other factors to 0
 
-**Example for k=3:**
+**Example for k=3** (actual output order — factor pairs (i,j), then
+the two active factors vary with the first (i) slowest):
+
 ```
 For pair (A,B) with C=0:
   A   B   C
  -1  -1   0
- +1  -1   0
  -1  +1   0
+ +1  -1   0
  +1  +1   0
 
 For pair (A,C) with B=0:
   A   B   C
  -1   0  -1
- +1   0  -1
  -1   0  +1
+ +1   0  -1
  +1   0  +1
 
 For pair (B,C) with A=0:
   A   B   C
   0  -1  -1
-  0  +1  -1
   0  -1  +1
+  0  +1  -1
   0  +1  +1
 ```
 
-Plus center points (typically 3-5).
+Plus center points (default: 3).
 
 ### Run Count Formula
 
@@ -244,10 +270,11 @@ For small number of factors, BBD more efficient:
 |---------|----------|----------|---------------|
 | 3 | 20 | 15 | 25% fewer |
 | 4 | 31 | 27 | 13% fewer |
-| 5 | 52 | 43 | 17% fewer |
-| 6 | 90 | 63 | 30% fewer |
+| 5 | 48 | 43 | 10% fewer |
+| 6 | 82 | 63 | 23% fewer |
 
-For 5+ factors, CCD with fractional factorial can be more efficient.
+(Run counts use the code's default center-point counts.) For 5+ factors, CCD
+with fractional factorial can be more efficient.
 
 ### Prediction Variance
 
@@ -334,23 +361,16 @@ Randomize if requested
 Add run order
 ```
 
-### Computational Complexity
+## Decoding to Actual Values (automatic)
 
-**CCD:**
-- Time: O(2^k + k + nc)
-- Space: O((2^k + 2k + nc) × k)
+Both CCD and BBD are built internally on coded levels `{-1, 0, +1, ±α}`.
+Decoding to actual (natural) factor levels is **automatic**: the reverse
+transformation is applied to every continuous factor before the design is
+returned, so no manual decoding is needed. The returned DataFrame also
+carries `StdOrder`, `RunOrder`, and `PointType` (`Factorial` / `Axial` /
+`Center`) columns.
 
-**BBD:**
-- Time: O(k² + nc)
-- Space: O((2k(k-1) + nc) × k)
-
-BBD generation is faster for large k.
-
-## Decoding to Actual Values
-
-Both CCD and BBD use coded levels (-1, 0, +1, ±α). Convert to actual values:
-
-**Formula:**
+**Transformation applied internally:**
 ```
 x_actual = x_center + x_coded × (x_range / 2)
 ```
@@ -366,13 +386,32 @@ Range: [150, 200]°C
 Center: 175°C
 Half-range: 25°C
 
-Decoding:
+Internal decoding:
   -1.68 → 175 + (-1.68)(25) = 133°C
   -1.00 → 175 + (-1.00)(25) = 150°C
    0.00 → 175 + (0.00)(25) = 175°C
   +1.00 → 175 + (+1.00)(25) = 200°C
   +1.68 → 175 + (+1.68)(25) = 217°C
 ```
+
+For the rotatable 3-factor CCD above used with Temperature [150, 200],
+Pressure [50, 100], and Time [10, 20], the returned axial and center rows are
+(α = 1.682):
+
+```
+StdOrder  RunOrder PointType  Temperature  Pressure  Time
+       9         9     Axial      217.045      75.0  15.0
+      10        10     Axial      132.955      75.0  15.0
+      11        11     Axial      175.000     117.0  15.0
+      12        12     Axial      175.000      33.0  15.0
+      13        13     Axial      175.000      75.0  23.4
+      14        14     Axial      175.000      75.0   6.6
+      15        15     Center     175.000      75.0  15.0
+```
+
+The exact values are `217.045 / 132.955 / 117.045 / 32.955 / 23.409 / 6.591`
+(α = 1.682 folded through the decode formula); the center rows sit at the
+factor midpoints `175 / 75 / 15`.
 
 ## Model Fitting
 

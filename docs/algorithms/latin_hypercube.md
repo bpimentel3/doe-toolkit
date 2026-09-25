@@ -229,16 +229,16 @@ quality_ratio = min_dist / max_dist
 ### Basic Usage
 
 ```python
-from factors import Factor, FactorType
-from latin_hypercube import generate_latin_hypercube
+from src.core.factors import Factor, FactorType
+from src.core.latin_hypercube import generate_latin_hypercube
 
 # Define factors
 factors = [
-    Factor(name='Temperature', type=FactorType.CONTINUOUS, 
-           min=100, max=200, units='°C'),
-    Factor(name='Pressure', type=FactorType.CONTINUOUS,
-           min=1, max=5, units='bar'),
-    Factor(name='Catalyst', type=FactorType.CATEGORICAL,
+    Factor(name='Temperature', factor_type=FactorType.CONTINUOUS,
+           levels=[100, 200], units='°C'),
+    Factor(name='Pressure', factor_type=FactorType.CONTINUOUS,
+           levels=[1, 5], units='bar'),
+    Factor(name='Catalyst', factor_type=FactorType.CATEGORICAL,
            levels=['A', 'B', 'C'])
 ]
 
@@ -247,17 +247,18 @@ design = generate_latin_hypercube(
     factors=factors,
     n_runs=30,
     criterion='maximin',
-    n_candidates=10,
+    n_candidates=10,  # number of candidate designs evaluated
     seed=42  # For reproducibility
 )
 
 # Access design matrix
 print(design.design)  # Actual levels
 print(design.design_coded)  # Coded levels
-
-# Check quality
 print(f"Minimum distance: {design.criterion_value}")
 ```
+
+> The default of 10 candidate designs reflects the current validated
+> implementation defaults and may evolve in future releases.
 
 ### Augmentation
 
@@ -268,7 +269,7 @@ initial_design = generate_latin_hypercube(factors, n_runs=20, seed=42)
 # ... collect data, analyze ...
 
 # Need more data - add 10 runs
-from latin_hypercube import augment_latin_hypercube
+from src.core.latin_hypercube import augment_latin_hypercube
 
 augmented_design = augment_latin_hypercube(
     existing_design=initial_design.design.drop(columns=['StdOrder', 'RunOrder']),
@@ -299,47 +300,29 @@ design_corr = generate_latin_hypercube(
 print(f"Maximin score: {design_maximin.criterion_value}")
 print(f"Correlation score: {design_corr.criterion_value}")
 
-# Check actual correlation
+# Check the actual correlation between the continuous factor columns.
+# (The categorical 'Catalyst' column must be excluded - its string values
+# are not numeric and would break np.corrcoef.)
 import numpy as np
-corr_maximin = np.corrcoef(design_maximin.design_coded.iloc[:, 2:].T)
-corr_corr = np.corrcoef(design_corr.design_coded.iloc[:, 2:].T)
+numeric_cols = ['Temperature', 'Pressure']
+corr_maximin = np.corrcoef(design_maximin.design_coded[numeric_cols].T)[0, 1]
+corr_corr = np.corrcoef(design_corr.design_coded[numeric_cols].T)[0, 1]
 
-print("Maximin correlations:", corr_maximin[0, 1])
-print("Correlation-optimized:", corr_corr[0, 1])
+print("Maximin correlations:", corr_maximin)
+print("Correlation-optimized:", corr_corr)
 ```
 
-## Performance Considerations
+The `correlation` criterion minimizes the maximum absolute pairwise
+correlation between the continuous factors, driving it toward zero.
 
-### Computational Complexity
-
-| Operation | Complexity | Typical Time |
-|-----------|------------|--------------|
-| Generate single LHS | O(n × k) | <0.01s |
-| Compute distances (maximin) | O(n² × k) | 0.1s for n=100 |
-| Generate 10 candidates | O(10 × n² × k) | 1s for n=100 |
-| Augmentation | O(m × (n₁+n₂)² × k) | 2s for n₁=n₂=50 |
-
-where:
-- n = number of runs
-- k = number of factors
-- m = number of candidates
-- n₁, n₂ = existing and new runs
-
-### Memory Requirements
-
-- Design matrix: O(n × k) = 8 bytes × n × k
-- Distance matrix: O(n²) = 8 bytes × n²
-
-For n=1000, k=20: ~160 KB (negligible)
-
-### Optimization Tips
+## Practical Guidance
 
 1. **Use fewer candidates** for large designs (n > 1000)
    - 10 candidates is usually sufficient
    - Diminishing returns beyond 20 candidates
 
 2. **Use correlation criterion** for high-dimensional problems (k > 20)
-   - Faster than maximin (O(n × k²) vs O(n² × k))
+   - Correlation scoring is cheaper than the maximin distance calculation
    - Still provides good space-filling
 
 3. **Batch augmentation** rather than sequential

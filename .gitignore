@@ -38,6 +38,8 @@ doe-toolkit-env/
 .pytest_cache/
 .coverage
 htmlcov/
+.nicegui/
+issue_drafts/
 
 # OS
 .DS_Store
@@ -61,4 +63,3 @@ dist/
 !build_config.spec
 # Agent instructions (local only, not committed)
 AGENTS.md
-PR_PLAN_optimize_page.md

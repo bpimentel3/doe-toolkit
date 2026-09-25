@@ -27,8 +27,13 @@ Y = β₀ + β₁X₁ + β₂X₂ + β₃X₃ + β₁₂X₁X₂ + ... + ε
 Where:
 - Y = response
 - β = coefficients (effects)
-- X = factor levels (coded)
+- X = factor levels
 - ε = random error ~ N(0, σ²)
+
+The analysis encodes designs to coded [-1, 1] space internally (via
+`DesignSpace` in `src/core/coding.py`) so continuous factors contribute
+comparably; natural-unit coefficient values are recovered afterward for
+reporting.
 
 ### 1.3 ANOVA Table Structure
 
@@ -42,10 +47,10 @@ Where:
 
 **Key formulas:**
 - Sum of Squares: `SS = Σ(ŷ - ȳ)²` for each source
-- Degrees of Freedom: Based on levels and replication
+- Degrees of Freedom: based on levels and replication
 - Mean Square: `MS = SS / df`
 - F-statistic: `F = MS_effect / MS_error`
-- p-value: From F-distribution with (df_effect, df_error)
+- p-value: from the F-distribution with (df_effect, df_error)
 
 ---
 
@@ -60,10 +65,9 @@ Where:
 
 **Steps:**
 
-1. **Build Model Matrix X:**
-   ```python
-   # For factors A, B with interaction
-   X = [1, x_A, x_B, x_A*x_B]  # Each row
+1. **Build Model Matrix X** (one row per run):
+   ```
+   X = [1, x_A, x_B, x_A*x_B]
    ```
 
 2. **Estimate Coefficients (OLS):**
@@ -89,9 +93,10 @@ Where:
    ```
 
 6. **Compute Type II SS for Each Term:**
-   - Fit full model
-   - Fit model without term
-   - SS_term = SS_error(without) - SS_error(with)
+   - Fit the full model
+   - For each term, obtain its Type II SS by removing only that term from the
+     model (all other terms retained)
+   - statsmodels computes Type II SS directly via `anova_lm(fit, typ=2)`
 
 7. **Compute F-statistics:**
    ```
@@ -108,18 +113,18 @@ Where:
 **Using statsmodels:**
 ```python
 from statsmodels.formula.api import ols
+import statsmodels.api as sm
 
-formula = "Response ~ A + B + A*B"
-model = ols(formula, data=data)
+formula = "Response ~ Temperature + Pressure + Temperature*Pressure"
+model = ols(formula, data=df)
 results = model.fit()
 
-# ANOVA table
 anova_table = sm.stats.anova_lm(results, typ=2)  # Type II SS
 ```
 
 **Why Type II SS?**
 - Handles unbalanced designs properly
-- Each term tested after adjusting for all others at same/lower order
+- Each term is tested after adjusting for all others at the same or lower order
 - Standard for factorial designs
 
 ---
@@ -132,7 +137,7 @@ Split-plot designs have **nested error structure**:
 
 ```
 Whole-Plot (WP) level:
-  - Hard-to-change factors (Temperature, Batch, etc.)
+  - Hard- and very-hard-to-change factors (Temperature, Batch, Line, etc.)
   - WP Error: variation between whole-plots
 
 Sub-Plot (SP) level:
@@ -140,133 +145,156 @@ Sub-Plot (SP) level:
   - SP Error: variation within whole-plots
 ```
 
-**Critical:** Different effects test against different error terms!
+**Critical:** different effects test against different error terms!
 
-### 3.2 Mixed Model Formulation
+### 3.2 Error Structure
 
-**Fixed effects:** All factor effects (main effects, interactions)
+The shipped analysis uses the **two-strata Yates / expected-mean-squares
+approach** — not a mixed-model variance-components fit. For a design with a
+hard factor A and an easy factor B, with sub-plot error ε and whole-plot
+error γ:
 
-**Random effects:** Whole-plot ID (accounts for within-WP correlation)
+| Source | E(MS) |
+|--------|-------|
+| Factor A (whole-plot) | σ²_ε + n·σ²_γ + Q_A/(a−1) |
+| Whole-plot error | σ²_ε + n·σ²_γ |
+| Factor B (sub-plot) | σ²_ε + Q_B/(b−1) |
+| A × B interaction | σ²_ε + Q_AB/((a−1)(b−1)) |
+| Sub-plot error | σ²_ε |
 
-**Model:**
+where n = number of sub-plots per whole-plot and Q denotes the fixed quadratic
+form for a factor. The whole-plot and sub-plot effects therefore differ in
+their error denominator: whole-plot effects include the between-plot variance
+component σ²_γ.
+
+**F-tests:**
+- F_A = MS_A / MS_whole-plot error (NOT sub-plot error!)
+- F_B = MS_B / MS_sub-plot error
+- F_AB = MS_AB / MS_sub-plot error
+
+### 3.3 Implementation: Two-Strata OLS Pipeline
+
+`ANOVAAnalysis.fit()` detects a split-plot structure from factor changeability
+and delegates to `fit_split_plot_anova` (`src/core/split_plot_analysis.py`).
+The pipeline is:
+
+1. **Classify terms into strata.** A term belongs to the whole-plot stratum
+   only if *all* of its constituent factors are hard/very-hard; any term
+   touching an easy factor belongs to the sub-plot stratum.
+
+2. **Whole-plot stratum.** Collapse the run data to **one row per whole-plot**
+   (mean of the response over its sub-plots). Fit an OLS model of the
+   whole-plot terms on those means. The residual from this model is the
+   **whole-plot error** (its df = n_whole_plots − rank of the WP model).
+
+3. **Sub-plot stratum.** Fit an OLS model on the **full run data** with all
+   terms plus `C(WholePlot)` — the whole-plot ID absorbed as a fixed factor,
+   which removes whole-plot variation from the residuals. The residual is the
+   **sub-plot error** (df = n_runs − rank of this model).
+
+4. **Assemble the table.** Whole-plot terms are tested against
+   MS_whole-plot error; sub-plot terms and cross-strata interactions are
+   tested against MS_sub-plot error. Each row is tagged with a `Stratum`
+   column (`'Whole-Plot'` or `'Sub-Plot'`).
+
+**What this approach does NOT do:**
+- It does **not** estimate random-effect variance components (σ²_γ, σ²_ε are
+  not reported separately; the analysis works with the mean-square ratios).
+- It does **not** use `MixedLM`. A mixed model with a random whole-plot
+  intercept is singular for split-plot data because hard factors do not vary
+  within a whole-plot, which raises a `LinAlgError` — the docstring of
+  `_fit_mixed_effects_model` documents this explicitly, and the method name is
+  retained for compatibility only.
+
+### 3.4 Detection Algorithm
+
+`detect_split_plot_structure(design, factors)` (`src/core/analysis.py`):
+
 ```
-Y_ijk = μ + α_i + WP_j(α_i) + β_k + (αβ)_ik + ε_ijk
-
-Where:
-- α_i = hard factor (whole-plot level)
-- WP_j = random whole-plot effect ~ N(0, σ²_WP)
-- β_k = easy factor (sub-plot level)
-- (αβ)_ik = interaction
-- ε_ijk = sub-plot error ~ N(0, σ²_SP)
+1. Check factor changeability attributes
+2. any HARD or VERY_HARD factor → is_split_plot = True
+3. whole_plot_factors = very_hard + hard factors
+4. sub_plot_factors = easy factors
+5. has_blocking = 'Block' in design.columns
+6. whole_plot_column = 'WholePlot' (must exist for a split-plot fit)
 ```
 
-### 3.3 Proper F-tests
+**Two error strata, regardless of nesting depth.** Even when the *design*
+has three nesting levels (very-hard → hard → easy, produced by
+`generate_split_plot_design`), the *analysis* collapses the very-hard and hard
+factors into a **single whole-plot stratum** — both test their main effects
+against the same whole-plot error. There are exactly two error terms, matching
+the two-strata table above.
 
-**Whole-plot effects** (hard factors):
+A split-plot fit without a `WholePlot` column raises:
+
 ```
-F = MS_hard / MS_wholeplot
-```
-
-**Sub-plot effects** (easy factors):
-```
-F = MS_easy / MS_subplot
-```
-
-**Interactions:**
-- Hard × Hard → test against WP error
-- Hard × Easy → test against SP error
-- Easy × Easy → test against SP error
-
-### 3.4 Implementation with Mixed Models
-
-**Using statsmodels MixedLM:**
-```python
-from statsmodels.regression.mixed_linear_model import MixedLM
-
-# Fixed effects: all terms
-formula = "Response ~ Temperature + Time + Temperature*Time"
-
-# Random effect: whole-plot
-model = MixedLM.from_formula(
-    formula,
-    data=data,
-    groups=data['WholePlot'],  # Group by whole-plot ID
-    re_formula='1'  # Random intercept
-)
-
-results = model.fit(method='lbfgs')
+ValueError: Split-plot analysis requires a 'WholePlot' column in the design.
+Ensure the design was generated with hard-to-change factors so that
+whole-plot groupings are recorded.
 ```
 
-**Variance components:**
-- σ²_WP: Between whole-plot variance
-- σ²_SP: Within whole-plot variance (residual)
+### 3.5 Worked Example (df structure)
 
-### 3.5 Detection Algorithm
+Baking experiment: oven temperature (hard, 300/400 °F) × baking time (easy,
+10/30 min), run on **three days** (replicates), i.e. 3 × 2 × 2 = 12 runs and
+6 whole-plots (one per day-temperature). Fitting
+`['Temperature', 'Time', 'Temperature*Time']` produces this structural table
+(df/SS/F/P depend on the measured response, so only df/stratum are shown):
 
-**Auto-detect split-plot:**
-1. Check factor `changeability` attributes
-2. If any factor is HARD or VERY_HARD → split-plot
-3. Verify `WholePlot` column exists in design
+```
+                  df          Stratum
+Temperature        1          Whole-Plot
+WholePlot Error    4          Whole-Plot
+Time               1          Sub-Plot
+Temperature*Time   1          Sub-Plot
+SubPlot Error      4          Sub-Plot
+```
 
-**Structure classification:**
-- VERY_HARD factors → Whole-whole-plots
-- HARD factors → Whole-plots
-- EASY factors → Sub-plots
+Checks: whole-plot stratum total = 1 + 4 = 5 = n_whole_plots − 1 = 6 − 1;
+sub-plot stratum total = 1 + 1 + 4 = 6 = n_runs − n_whole_plots = 12 − 6.
 
 ---
 
 ## 4. Blocked Designs
 
-### 4.1 Block as Random Effect
+### 4.1 Block as a Factor
 
 Blocking accounts for nuisance variation:
 - Different days
 - Different batches
 - Different operators
 
-**Model block as random effect:**
-```
-Y_ijk = μ + Block_i + α_j + β_k + ... + ε_ijk
-
-Block_i ~ N(0, σ²_Block)
-```
-
 ### 4.2 Implementation
 
-**Same as split-plot, but group by Block:**
+For non-split-plot designs with a `Block` column, the default is to add
+`Block` as a **fixed categorical term** (its values are cast to strings so
+patsy treats it as categorical):
+
 ```python
-model = MixedLM.from_formula(
-    formula,
-    data=data,
-    groups=data['Block'],
-    re_formula='1'
-)
+formula = "Response ~ Temperature + Pressure + Block"
+model = ols(formula, data=df)
+results = model.fit()
 ```
+
+Passing `block_as_random=True` to `ANOVAAnalysis` instead fits Block as a
+**random effect**:
+
+```python
+model = mixedlm(formula, data=df, groups=df['Block'], re_formula='1')
+results = model.fit(method='lbfgs')
+```
+
+The mixed-model path is only used for blocked (non-split-plot) designs; the
+split-plot path always uses the two-strata OLS pipeline above.
 
 ### 4.3 Split-Plot + Blocking
 
-**Nested structure:**
-```
-Block → WholePlot(Block) → SubPlot(WholePlot)
-```
-
-**Random effects:**
-- Block: outermost variation
-- WholePlot nested in Block: middle variation
-- Residual: innermost variation
-
-**Implementation workaround:**
-```python
-# Create composite grouping variable
-data['Block_WholePlot'] = data['Block'].astype(str) + '_' + data['WholePlot'].astype(str)
-
-model = MixedLM.from_formula(
-    formula,
-    data=data,
-    groups=data['Block_WholePlot'],
-    re_formula='1'
-)
-```
+Blocking can be applied at the whole-plot level during design generation
+(`generate_split_plot_design(n_blocks=...)`). The `Block` column is carried
+into the analysis data, but the shipped two-strata split-plot fit does **not**
+currently include `Block` as a model term (a documented limitation). There is
+no composite `Block_WholePlot` interaction term in the code.
 
 ---
 
@@ -274,40 +302,59 @@ model = MixedLM.from_formula(
 
 ### 5.1 Hierarchy Enforcement
 
-**Principle:** If including A×B, must include A and B
+**Principle:** if including A×B, must include A and B (and a quadratic I(A**2)
+builds on its main effect).
 
-**Why?** 
-- Interpretability: Can't estimate interaction without main effects
-- Statistical: Correlation between terms without hierarchy
-- Standard practice: All software enforces this
+**Why?**
+- Interpretability: an interaction is hard to interpret without its parents
+- Statistical estimability / correlation between terms without hierarchy
+- Standard practice: most software enforces this
 
-**Implementation:**
-1. Parse each term for constituent factors
-2. For interactions (A×B) or powers (A²), add main effects
-3. Warn user of additions
+**Implementation:** `enforce_hierarchy()` adds any missing lower-order terms
+and warns:
+
+```
+warnings.warn(f"Added for hierarchy: {added}")
+```
 
 ### 5.2 Model Term Syntax
 
-**Supported notation:**
-- Main effect: `"A"`, `"Temperature"`
-- Interaction: `"A*B"`, `"Temperature*Pressure"`
-- Quadratic: `"A^2"`, `"Temperature^2"`
-- Intercept: `"1"` (optional, statsmodels adds by default)
+**Supported notation (patsy):**
 
-**Conversion for statsmodels:**
-```python
-# User notation → statsmodels notation
-"A^2" → "A**2"  # Python exponentiation
-"A*B" → "A:B"   # statsmodels uses colon for interactions (automatic)
-```
+- Main effect: `"Temperature"`
+- Interaction: `"Temperature*Pressure"` (patsy expands `A*B` into
+  `A + B + A:B` automatically)
+- Quadratic: `"I(Temperature**2)"` — the `I()` identity function forces
+  Python exponentiation; a bare `A**2` is parsed by patsy as an interaction
+  of `A` with itself and is dropped. All quadratic documentation and the
+  model builder use the `I(...)` form.
+- Intercept: `"1"` (included implicitly by statsmodels)
+
+`generate_model_terms(factors, model_type)` emits `'linear'`,
+`'interaction'` or `'quadratic'` term sets directly in this notation,
+appending `I({factor}**2)` for every continuous factor when quadratic is
+requested.
 
 ### 5.3 Validation
 
-**Check before fitting:**
-1. All factors in terms exist in factor list
-2. Quadratic terms only for continuous factors
-3. Quadratic terms only if design has >2 levels
-4. All terms are valid syntax
+`validate_model_terms()` checks before fitting:
+1. All factors in every term exist:
+   ```
+   ValueError: Factor '<name>' in '<term>' not found
+   ```
+2. Quadratic terms only for continuous factors:
+   ```
+   ValueError: Quadratic '<term>' requires continuous factor
+   ```
+3. Transform terms (e.g. `np.log(A)`, `I(1/A)`) require a continuous factor:
+   ```
+   ValueError: Transform term '<term>' requires a continuous factor;
+   '<factor>' is not continuous.
+   ```
+4. Degrees of freedom are checked; saturation warns:
+   ```
+   UserWarning: Low df_error = <n>: Inference may be unreliable
+   ```
 
 ---
 
@@ -315,57 +362,64 @@ model = MixedLM.from_formula(
 
 ### 6.1 Residual Diagnostics
 
-**Purpose:** Validate model assumptions
+**Purpose:** validate model assumptions
 - Normality: ε ~ N(0, σ²)
-- Homoscedasticity: constant variance
+- Constant variance (homoscedasticity)
 - Independence: no patterns in residuals
 
-**Tests:**
+**Tests implemented (shipped):**
 
 1. **Shapiro-Wilk Test (Normality):**
    ```
    H₀: Residuals are normally distributed
    If p < 0.05 → reject H₀ → non-normal
    ```
+   Computed when the number of residuals is ≤ 5000 and reported under
+   `results.diagnostics['shapiro_wilk']` as `{'statistic': ..., 'p_value': ...}`.
 
-2. **Breusch-Pagan Test (Homoscedasticity):**
-   ```
-   H₀: Variance is constant
-   If p < 0.05 → reject H₀ → heteroscedastic
-   ```
+Only Shapiro-Wilk is currently implemented in `_compute_diagnostics()`; there
+is no Breusch-Pagan (or other heteroscedasticity) test in the shipped module.
+Homoscedasticity is assessed graphically via the residual plots below.
 
 ### 6.2 Diagnostic Plots
 
-**1. Normal Probability Plot**
-- Plot: Theoretical quantiles vs sample quantiles
-- Expected: Points on diagonal line
-- Violations: S-curve, outliers
+Plotting lives in `src/ui/utils/plotting.py` (Streamlit-free, returns
+Plotly figures). The functions used by the Analyze page include:
+
+| Plot | Function |
+|------|----------|
+| Actual vs predicted (parity) | `create_parity_plot(actual, predicted, response_units=...)` |
+| Residuals vs fitted | `create_residual_plot(fitted, residuals, response_units=...)` |
+| QQ (normality) | `create_qq_plot(residuals)` |
+| Residuals vs run order | `create_residual_vs_run_order_plot(...)` |
+| Residuals vs factor | `create_residual_vs_factor_plot(...)` |
+
+**1. Parity Plot (Actual vs Predicted)**
+- Points should scatter around the 1:1 line
+- The 95% band reflects uncertainty in the fit line
+- Curvature or drift indicates a missing term
 
 **2. Residuals vs Fitted**
-- Plot: e vs ŷ
-- Expected: Random scatter around zero
-- Violations: Funnel (heteroscedasticity), curves (nonlinearity)
+- Expected: random scatter around zero
+- Violations: funnel shape (heteroscedasticity), curves (nonlinearity)
 
-**3. Residuals vs Run Order**
-- Plot: e vs time order
-- Expected: Random scatter
-- Violations: Trends, cycles (process drift, autocorrelation)
+**3. QQ Plot**
+- Points on the diagonal → residuals approximately normal
+- S-curve or heavy tails → non-normality
 
-**4. Leverage Plot (Cook's Distance)**
-- Identifies influential observations
-- Cook's D > 1: Very influential
-- Cook's D > 4/n: Potentially influential
+**4. Residuals vs Run Order**
+- Expected: random scatter (no time pattern)
+- Violations: trends or cycles (drift, autocorrelation)
 
-**Formula:**
+Influence is surfaced via the leverage/Cook's-distance machinery in the
+diagnostics pages:
+
 ```
 D_i = (e_i² / (p × MSE)) × (h_i / (1-h_i)²)
-
-Where:
-- e_i = residual for observation i
-- h_i = leverage (diagonal of hat matrix)
+```
+- h_i = leverage (diagonal of the hat matrix)
 - p = number of parameters
 - MSE = mean squared error
-```
 
 ---
 
@@ -376,8 +430,7 @@ Where:
 **For each factor:**
 1. Group observations by factor level
 2. Compute mean response at each level
-3. Plot level vs mean response
-4. Connect with lines
+3. Plot level vs mean response, connected by lines
 
 **Interpretation:**
 - Horizontal line → no effect
@@ -387,31 +440,28 @@ Where:
 ### 7.2 Interaction Plot
 
 **For two factors A and B:**
-1. Plot A levels on x-axis
-2. Plot separate lines for each B level
-3. Each line shows mean response
+1. Plot A levels on the x-axis
+2. Plot a separate line for each B level (mean response)
+3. Non-parallel lines → interaction; parallel lines → no interaction
 
-**Interpretation:**
-- Parallel lines → no interaction
-- Non-parallel lines → interaction present
-- Crossing lines → strong interaction
+Implemented as `create_interaction_plot(...)` in `src/ui/utils/plotting.py`.
 
 ### 7.3 LogWorth Chart (Significance)
 
-**Purpose:** Visual ranking of effect importance
+**Purpose:** visual ranking of effect importance
 
 **LogWorth = -log₁₀(p-value)**
 
 **Interpretation:**
-- LogWorth > 1.3 → p < 0.05 (significant at α=0.05)
-- LogWorth > 2.0 → p < 0.01 (highly significant)
+- LogWorth > 1.301 → p < 0.05 (significant at α=0.05)
+- LogWorth > 2 → p < 0.01 (highly significant)
 - Longer bars → more significant effects
 
-**Chart elements:**
-- Horizontal bars: LogWorth for each term
-- Threshold line: Significance level
-- Colors: Red (significant), Gray (not significant)
-- Labels: Actual p-values on right side
+Implementations: `create_logworth_plot(logworth_df, p_values)` (term-level
+ANOVA p-values) and `create_coefficient_significance_plot(..., alpha=0.05)`
+(coefficient-level). The Analyze page also offers a
+`create_standardized_effects_plot(...)` (DOE standardized effects) and a
+half-normal/probability plot `create_half_normal_plot(effects, effect_names)`.
 
 ---
 
@@ -432,89 +482,54 @@ R² = 1 - SS_error / SS_total
 R²_adj = 1 - (1 - R²) × (n-1) / (n-p-1)
 ```
 - Penalizes model complexity
-- Use for comparing models
+- For split-plot results, computed over the fixed terms of interest (whole-plot
+  absorption columns excluded)
 
 **RMSE (Root Mean Squared Error):**
 ```
 RMSE = √(SS_error / n)
 ```
-- Same units as response
+- Same units as the response
 - Lower is better
-- Intuitive measure of prediction error
 
-### 8.2 Model Selection Strategy
+### 8.2 Model Selection: BIC Stepwise (shipped)
 
-**Hierarchical approach:**
-1. Start with full model (all terms)
-2. Remove non-significant terms
-3. Keep hierarchy intact
-4. Re-fit and check fit metrics
+BIC-based **bidirectional stepwise selection** is implemented in
+`src/core/stepwise.py` and exposed on the Analyze page
+(`src/ui/components/model_builder.py`):
 
-**Information Criteria (future enhancement):**
-- AIC: Akaike Information Criterion
-- BIC: Bayesian Information Criterion
+```
+BIC = n·ln(RSS/n) + k·ln(n)        (n = observations, k = parameters)
+```
 
----
-
-## 9. Computational Complexity
-
-### 9.1 Time Complexity
-
-**Model fitting:**
-- OLS: O(n·p² + p³) for n observations, p parameters
-- Mixed models: O(n·p² + p³ + n·g) for g groups
-
-**ANOVA table (Type II SS):**
-- O(p × [model fitting cost])
-- Must refit p times (one per term)
-
-**Diagnostics:**
-- O(n) for residual calculations
-- O(n²) for leverage (hat matrix diagonal)
-
-### 9.2 Space Complexity
-
-- Design matrix: O(n·p)
-- Covariance matrix: O(p²)
-- For typical designs: negligible
-
-### 9.3 Numerical Stability
-
-**Concerns:**
-- Matrix inversion for (X'X)⁻¹
-- Condition number of design matrix
-
-**Solutions:**
-- Use coded levels ([-1, 1]) → better conditioning
-- Ridge regularization if needed: (X'X + λI)⁻¹
-- QR decomposition instead of direct inversion
+`stepwise_selection(anova_results, ...)` (forward/backward, `bic_threshold`)
+adds or removes one term at a time while respecting model hierarchy, keeping
+the step that lowers BIC most; a `StepwiseResults` object reports each step's
+BIC and ΔBIC. The design-aware automatic model selection
+(`src/core/selection.py`) starts from the stepwise result and refines it
+against the design in use.
 
 ---
 
-## 10. References
-
-> **Note:** Citations below are based on standard attribution in the DOE literature. They have not been verified against source texts. Journal volume and page numbers should be treated as approximate.
+## 9. References
 
 ### Primary References
 
 [1] **Montgomery, D. C. (2017).** *Design and Analysis of Experiments*, 9th Edition. Wiley.
     - Chapter 5: Factorial Designs
     - Chapter 14: Split-Plot Designs
-    - Gold standard textbook
 
 [2] **Box, G. E. P., Hunter, W. G., & Hunter, J. S. (2005).** *Statistics for Experimenters: Design, Innovation, and Discovery*, 2nd Edition. Wiley-Interscience.
     - Chapter 5: Factorial Designs at Two Levels
-    - Practical, example-driven approach
 
 [3] **Littell, R. C., Milliken, G. A., Stroup, W. W., Wolfinger, R. D., & Schabenberger, O. (2006).** *SAS for Mixed Models*, 2nd Edition. SAS Institute.
-    - Chapter 8: Split-Plot Designs
-    - Detailed mixed model methodology
+    - Chapter 8: Split-Plot Designs (mixed-model background)
 
 ### Statistical Software Documentation
 
 [4] **statsmodels documentation:**
-    - https://www.statsmodels.org/stable/mixed_linear.html
-    - Mixed Linear Models (MixedLM)
+    - https://www.statsmodels.org/stable/regression.html (OLS)
+    - https://www.statsmodels.org/stable/mixed_linear.html (MixedLM, blocked designs)
 
 [5] **scipy.stats documentation:**
     - https://docs.scipy.org/doc/scipy/reference/stats.html
@@ -530,103 +545,115 @@ RMSE = √(SS_error / n)
 
 ---
 
-## 11. Implementation Details
+## 10. Implementation Details
 
-### 11.1 Code Architecture
+### 10.1 Module Structure
 
-**Module structure:**
+**Core (Streamlit-free):**
 ```
 analysis.py
-├── Model Term Generation
-│   ├── generate_model_terms()
-│   ├── parse_model_term()
-│   └── enforce_hierarchy()
-├── Structure Detection
-│   └── detect_split_plot_structure()
-├── Data Preparation
-│   ├── prepare_analysis_data()
-│   └── validate_model_terms()
-├── ANOVAAnalysis Class
-│   ├── __init__()
-│   ├── fit()
-│   ├── _fit_regular_model()
-│   ├── _fit_split_plot_model()
-│   ├── _build_formula()
-│   ├── _extract_results()
-│   ├── _compute_diagnostics()
-│   ├── update_model()
-│   ├── plot_effects()
-│   ├── plot_diagnostics()
-│   └── plot_significance()
-└── ANOVAResults (dataclass)
+├── generate_model_terms()          # 'linear' / 'interaction' / 'quadratic'
+├── detect_split_plot_structure()   # changeability → strata + columns
+├── prepare_analysis_data()         # factor columns + response + plot/block cols
+├── validate_model_terms()          # existence / quadratic / transform rules
+├── ANOVAAnalysis
+│   ├── __init__()                  # DesignSpace coding, structure detection
+│   ├── fit()                       # resolve terms, hierarchy, prune, fit
+│   ├── _fit_fixed_effects_model()  # OLS (or mixedlm for blocked random)
+│   ├── _fit_mixed_effects_model()  # split-plot → two-strata OLS (legacy name)
+│   ├── update_model()              # add/remove terms and refit
+│   └── _compute_diagnostics()      # Shapiro-Wilk
+├── ANOVAResults (imported from analysis_base)
 ```
 
-### 11.2 Key Design Decisions
+```
+analysis_base.py
+├── ANOVAResults dataclass
+├── parse_model_term() / enforce_hierarchy() / compute_actual_coefficients()
+├── build_anova_effect_summary() / build_coefficient_significance()
+```
+
+```
+split_plot_analysis.py
+└── fit_split_plot_anova()          # two-strata Yates/EMS OLS pipeline
+```
+
+**Plotting:** `src/ui/utils/plotting.py` — `create_parity_plot`,
+`create_residual_plot`, `create_qq_plot`, `create_logworth_plot`,
+`create_coefficient_significance_plot`, `create_standardized_effects_plot`,
+`create_half_normal_plot`, `create_interaction_plot`, etc. (Plotly figures,
+no Streamlit dependency).
+
+### 10.2 Key Design Decisions
 
 **1. Auto-detection with override:**
-- Default: Detect split-plot from changeability
-- Option: User can override with `is_split_plot` parameter
-- Rationale: Convenience + flexibility
+- Default: detect split-plot from changeability
+- Option: user can override with the `is_split_plot` parameter
+- Rationale: convenience + flexibility
 
 **2. Separate response and design:**
-- Response passed as separate array/Series
-- Validation: Check length match
-- Rationale: Clean API, common in R/Python stats packages
+- Response passed as a separate array/Series
+- Validation: length must match (`Response length mismatch: <n> != <m>`)
+- Rationale: clean API, common in R/Python stats packages
 
 **3. Model term strings:**
-- User-friendly notation: "A*B", "A^2"
-- Internal conversion to statsmodels format
-- Rationale: Matches R formula syntax (familiar to statisticians)
+- User-friendly patsy notation: `"A"`, `"A*B"`, `"I(A**2)"`
+- Quadratics always use the `I()` identity wrapper
+- Rationale: matches R formula syntax (familiar to statisticians)
 
-**4. Mixed models for all random effects:**
-- Blocks → MixedLM with Block as group
-- Split-plot → MixedLM with WholePlot as group
-- Rationale: Unified framework, proper inference
+**4. Split-plot inference is two-strata OLS, not MixedLM:**
+- MixedLM is used only for blocked (non-split-plot) designs when
+  `block_as_random=True`
+- Split-plot uses the Yates / expected-mean-squares two-strata OLS to avoid
+  the singular-matrix failure of a random whole-plot intercept model
+- Rationale: correct F-tests with per-stratum error terms, no variance
+  components needed
 
-### 11.3 Error Handling
+### 10.3 Error Handling
 
-**Common errors and solutions:**
+**Common errors and solutions (verbatim messages):**
 
 1. **No WholePlot column for split-plot:**
    ```
-   ValueError: Split-plot analysis requires 'WholePlot' column
-   Solution: Use generate_split_plot_design()
+   ValueError: Split-plot analysis requires a 'WholePlot' column in the design.
+   Ensure the design was generated with hard-to-change factors so that
+   whole-plot groupings are recorded.
    ```
+   Solution: generate the design with `generate_split_plot_design()`.
 
 2. **Response length mismatch:**
    ```
-   ValueError: Response length must match design length
-   Solution: Check that response matches design rows
+   ValueError: Response length mismatch: <n> != <m>
    ```
+   Solution: check that the response matches the design rows.
 
 3. **Invalid factor in term:**
    ```
-   ValueError: Factor 'X' not found in factor list
-   Solution: Check factor names match exactly
+   ValueError: Factor '<name>' in '<term>' not found
    ```
+   Solution: check that factor names match exactly.
 
-4. **Quadratic on categorical:**
+4. **Quadratic on a categorical factor:**
    ```
-   ValueError: Quadratic term only valid for continuous factors
-   Solution: Use continuous factors for quadratic models
+   ValueError: Quadratic '<term>' requires continuous factor
    ```
+   Solution: use continuous factors for quadratic models.
 
 ---
 
-## 12. Future Enhancements
+## 11. Future Enhancements
 
 ### Planned Features
 
-1. **Multiple responses:**
-   - Fit multiple models independently
-   - Combine in multi-response optimization
+1. **Block-as-term support for split-plot fits** — include the `Block` column
+   in the two-strata model rather than carrying it in the data only.
 
-2. **More information criteria:**
-   - AIC, BIC for model selection
-   - Automated stepwise selection
+2. **More information criteria / selection metrics** — expose AIC in addition
+   to the shipped BIC stepwise.
 
 3. **Advanced diagnostics:**
    - Variance Inflation Factor (VIF) for multicollinearity
+   - Breusch-Pagan (heteroscedasticity)
    - DFFITS, DFBETAS for influence
    - Partial residual plots
 
@@ -646,90 +673,83 @@ analysis.py
 ### Example 1: Simple Factorial ANOVA
 
 ```python
+import numpy as np
+from src.core.factors import Factor, FactorType
+from src.core.full_factorial import full_factorial
 from src.core.analysis import ANOVAAnalysis, generate_model_terms
-from src.core.factors import Factor, FactorType, ChangeabilityLevel
 
-# Define factors
 factors = [
-    Factor("Temperature", FactorType.CONTINUOUS, ChangeabilityLevel.EASY, 
-           levels=[150, 200]),
-    Factor("Pressure", FactorType.CONTINUOUS, ChangeabilityLevel.EASY,
-           levels=[50, 100])
+    Factor("Temperature", FactorType.CONTINUOUS, levels=[150, 200]),
+    Factor("Pressure", FactorType.CONTINUOUS, levels=[50, 100]),
 ]
 
-# Assume we have design and response
-# design = ... (from full_factorial)
-# response = ... (measured values)
+design = full_factorial(factors, n_center_points=1, randomize=False, random_seed=42)
 
-# Generate standard model terms
-terms = generate_model_terms(factors, 'interaction')  # Linear + 2-way
+rng = np.random.default_rng(42)
+response = (
+    5.0 + 0.3 * design["Temperature"] + 0.04 * design["Pressure"]
+    + rng.normal(0, 0.5, len(design))
+)
 
-# Fit model
+terms = generate_model_terms(factors, "interaction")  # main effects + 2-way
+
 analysis = ANOVAAnalysis(design, response, factors)
 results = analysis.fit(terms)
 
-# View results
 print(results.anova_table)
-print(results.effect_estimates)
+print(results.effect_estimates[["Coefficient", "p_value"]])
 print(f"R² = {results.r_squared:.3f}")
-
-# Diagnostics
-fig = analysis.plot_diagnostics()
 ```
 
-### Example 2: Split-Plot ANOVA
+### Example 2: Split-Plot ANOVA (two-strata)
 
 ```python
+import numpy as np
+from src.core.factors import Factor, FactorType, ChangeabilityLevel
 from src.core.split_plot import generate_split_plot_design
+from src.core.analysis import ANOVAAnalysis
 
-# Define factors with changeability
 factors = [
-    Factor("Temperature", FactorType.CONTINUOUS, ChangeabilityLevel.HARD,
-           levels=[100, 200]),  # Hard to change
-    Factor("Time", FactorType.CONTINUOUS, ChangeabilityLevel.EASY,
-           levels=[10, 30])  # Easy to change
+    Factor(name="Temperature", factor_type=FactorType.CONTINUOUS,
+           levels=[300, 400], changeability=ChangeabilityLevel.HARD),
+    Factor(name="Time", factor_type=FactorType.CONTINUOUS,
+           levels=[10, 30], changeability=ChangeabilityLevel.EASY),
 ]
 
-# Generate split-plot design
-design = generate_split_plot_design(
-    factors=factors,
-    n_replicates=3,
-    randomize_whole_plots=True
+design = generate_split_plot_design(factors=factors, n_replicates=3, seed=42,
+                                    randomize_whole_plots=True,
+                                    randomize_sub_plots=True)
+
+rng = np.random.default_rng(7)
+response = (
+    50.0 + 0.1 * design.design["Temperature"] + 0.5 * design.design["Time"]
+    + rng.normal(0, 0.4, len(design.design))
 )
 
-# Measure response
-# response = ... (collect data)
+analysis = ANOVAAnalysis(design.design, response, factors)  # split-plot auto-detected
+results = analysis.fit(["Temperature", "Time", "Temperature*Time"])
 
-# Fit split-plot model
-analysis = ANOVAAnalysis(design.design, response, factors)
-# is_split_plot auto-detected from factor changeability
+print(results.anova_table[["df", "F", "P", "Stratum"]])
+```
 
-results = analysis.fit(['Temperature', 'Time', 'Temperature*Time'])
+Residual plots for either example:
 
-# Results have proper error terms
-print(results.anova_table)  # Shows WP and SP error
+```python
+from src.ui.utils.plotting import create_residual_plot, create_qq_plot
+
+res_fig = create_residual_plot(results.fitted_values, results.residuals)
+qq_fig = create_qq_plot(results.residuals)
 ```
 
 ### Example 3: Model Refinement
 
 ```python
-# Start with full model
-results1 = analysis.fit(['A', 'B', 'C', 'A*B', 'A*C', 'B*C'])
+# Start with the full interaction model
+results1 = analysis.fit(["Temperature", "Pressure", "Temperature*Pressure"])
 
-# Check significance
-fig = analysis.plot_significance(alpha=0.05)
+# Drop a non-significant interaction (hierarchy is re-checked)
+results2 = analysis.update_model(terms_to_remove=["Temperature*Pressure"])
 
-# Remove non-significant terms
-results2 = analysis.update_model(terms_to_remove=['B*C'])
-
-# Compare fit
 print(f"Full model R² = {results1.r_squared:.3f}")
 print(f"Reduced model R² = {results2.r_squared:.3f}")
-print(f"Adjusted R² improved: {results2.adj_r_squared > results1.adj_r_squared}")
 ```
-
----
-
-**Document Version:** 1.0  
-**Last Updated:** Session 9 Implementation  
-**Author:** DOE-Toolkit Development Team

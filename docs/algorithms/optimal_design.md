@@ -2,14 +2,19 @@
 
 ## Overview
 
-D-optimal designs maximize the determinant of the information matrix (X'X), providing the most precise parameter estimates for a given model and run budget. This module implements a fast coordinate exchange algorithm with constraint handling for generating D-optimal experimental designs.
+D-optimal designs maximize the determinant of the information matrix (X'X), providing the most precise parameter estimates for a given model and run budget. This module generates D- and I-optimal experimental designs by iteratively swapping runs with points from a candidate pool, with support for linear constraints.
+
+> The implementation is labeled internally as coordinate exchange (CEXCH), but
+> it actually operates as **candidate-set row exchange**: each iteration swaps a
+> whole run (a full candidate point) into a design row, as described in the
+> "Algorithm" section below.
 
 **Key Features:**
-- Fast coordinate exchange (CEXCH) with Sherman-Morrison updates
-- Linear constraint support (sum, bound, equality/inequality)
-- Automatic candidate pool generation and augmentation
-- Efficiency benchmarking against standard designs (Full Factorial, CCD)
-- Robust handling of constrained design spaces
+- D-optimality and I-optimality (`criterion='D'` or `'I'`)
+- Linear constraint support (≤, ≥, = via `LinearConstraint`)
+- Candidate pool built from factorial vertices, axial points, the center point, and Latin Hypercube points
+- Efficiency benchmarking against Full Factorial 2^k and Face-Centered CCD
+- Deterministic with a fixed random seed
 
 ---
 
@@ -47,23 +52,23 @@ To compare designs of different sizes, we compute D-efficiency relative to a ben
 D-efficiency = (|X'X|_achieved / |X'X|_benchmark)^(1/p) × 100%
 ```
 
-**Benchmark choices:**
+**Benchmark choices** (these are the designs used by the code):
 - **Linear models:** Full Factorial 2^k (the gold standard)
-- **Quadratic models:** Central Composite Design (CCD, rotatable)
+- **Interaction and quadratic models:** Face-Centered CCD — `alpha='face'`, `center_points=6` for k ≤ 4 and 5 for k > 4. A face-centered CCD keeps the axial points inside the [-1, 1]^k box (α = 1), which makes it a fair benchmark for designs restricted to the same space. (It is **not** a rotatable CCD.)
 
 **Expected efficiencies:**
-- Linear vs Full Factorial: **>90%** (near-optimal)
-- Quadratic vs CCD: **>100%** (D-optimal typically beats CCD)
+- Linear vs Full Factorial: **≥90%** (typically ≈ 100%)
+- Interaction/quadratic vs Face-Centered CCD: **≥100%** (D-optimal typically beats CCD; values around 110-120% are typical)
 
 **Note:** Values >100% indicate the design is better than the benchmark. This is expected and desirable for D-optimal designs.
 
 ---
 
-## Algorithm: Coordinate Exchange (CEXCH)
+## Algorithm: Candidate-Set (Row) Exchange
 
 ### Overview
 
-The coordinate exchange algorithm iteratively improves a design by swapping individual design points with better candidates from a candidate pool.
+The optimizer iteratively improves a design by swapping individual runs with better candidate points from a feasible candidate pool. Each loop pass tries, for every design row, each candidate point in a per-row subset, keeps the swap that most improves the criterion, and commits it.
 
 **Reference:** Meyer, R. K., & Nachtsheim, C. J. (1995). The coordinate-exchange algorithm for constructing exact optimal experimental designs. *Technometrics*, 37(1), 60-69.
 
@@ -71,38 +76,41 @@ The coordinate exchange algorithm iteratively improves a design by swapping indi
 
 ```
 1. Initialize:
-   - Generate candidate pool (vertices, axial points, LHS)
+   - Generate candidate pool (vertices, axial points, center point, LHS)
    - Filter for feasibility (if constraints present)
    - Randomly select n_runs points as initial design
-   - Compute X'X and (X'X)^(-1)
+   - Compute X'X (+ ridge 1e-10 on the diagonal) and (X'X)^(-1)
 
 2. For each iteration:
    For each row i in design:
-     For each candidate c in candidate pool:
-       - Compute new objective if swap row i ↔ candidate c
-       - Track best improvement
-     - If improvement found, commit best swap
-   
-   - Check convergence:
-     * No improvement for 15 iterations → STOP (stability)
-     * Relative improvement < 0.01% → STOP (diminishing returns)
-     * Max iterations reached → STOP (safety)
+     - Build the per-row candidate subset:
+       * Always include structured (near-boundary) points (max|xᵢ| ≥ 0.99)
+       * Sample additional candidates up to max_candidates_per_row (default 50)
+     - For each candidate c in the subset:
+       - Compute the criterion objective for a trial design with row i → c
+       - Track the best improvement
+     - If an improvement was found, commit the winning swap
+   - Check convergence (see below)
 
 3. Repeat from step 2 with different random starts (default: 3 starts)
 
-4. Return best design across all starts
+4. Return the best design across all starts
 ```
 
-### Sherman-Morrison Optimization
+The number of parameters p is determined by the model type:
+- `linear`: p = 1 + k
+- `interaction`: p = 1 + k + k(k-1)/2
+- `quadratic`: p = 1 + k + k(k-1)/2 + k
 
-**Key Innovation:** Reuse intermediate computations when evaluating swaps.
+### Sherman-Morrison Update
 
-When swapping row x_old → x_new, the information matrix changes:
+When a row x_old is replaced by x_new, the information matrix changes:
+
 ```
 X'X_new = X'X_old - x_old·x_old' + x_new·x_new'
 ```
 
-**Sherman-Morrison formula** allows us to update (X'X)^(-1) and compute det(X'X_new) without full matrix inversion:
+The **Sherman-Morrison formula** updates (X'X)^(-1) and computes det(X'X_new)/det(X'X_old) in O(p²) rather than a full O(p³) inversion:
 
 ```python
 # Remove x_old:
@@ -119,12 +127,10 @@ denom_new = 1 + x_new' · v_new
 det(X'X_new) / det(X'X_old) = denom_old × denom_new
 ```
 
-**Performance benefit:** Eliminates duplicate computation. When we evaluate N candidates for a row and pick the best, we:
-- Compute SM updates for all N candidates (evaluation)
-- **Reuse** the stored inverse for the best candidate (commit)
-- Old approach: N evaluations + 1 commit = N+1 SM computations
-- New approach: N evaluations (with inverse stored) = N SM computations
-- **Speedup: ~2x in optimization loop**
+**How it is actually used by the code:**
+- Candidate *acceptance* still evaluates the full criterion objective (`criterion.objective()`) on each trial design — the determinant ratio is **not** used as the accept/reject predicate.
+- The Sherman-Morrison update is applied at **commit time**: the inverse computed along the way is reused for the winning swap instead of re-inverting X'X.
+- So the benefit is avoiding a full matrix inversion for every *accepted* swap, not per candidate evaluation. There is no guaranteed ~2× end-to-end speedup.
 
 ---
 
@@ -135,7 +141,7 @@ det(X'X_new) / det(X'X_old) = denom_old × denom_new
 **Linear constraints in actual (decoded) factor space:**
 
 ```python
-# Sum constraint: a₁x₁ + a₂x₂ + ... ≤ b
+# Upper bound: a₁x₁ + a₂x₂ + ... ≤ b
 LinearConstraint(
     coefficients={'X1': 1.0, 'X2': 1.0},
     bound=15.0,
@@ -149,19 +155,20 @@ LinearConstraint(
     constraint_type='ge'  # ≥
 )
 
-# Equality: a₁x₁ + a₂x₂ = b (mixture designs)
+# Equality: a₁x₁ + a₂x₂ = b
 LinearConstraint(
     coefficients={'X1': 1.0, 'X2': 1.0, 'X3': 1.0},
     bound=1.0,
     constraint_type='eq'  # =
 )
-"""Note: While equality constraints of the form x1 + x2 + x3 = 1 can be specified,
-full mixture designs (simplex geometry, Scheffé polynomials, mixture model
-parameterization, or mixture-specific candidate sets) are NOT yet supported.
-The algorithm will treat these as standard linear constraints rather than a
-true mixture design."
-
 ```
+
+> Note: While equality constraints of the form x1 + x2 + x3 = 1 can be specified,
+> full mixture designs (simplex geometry, Scheffé polynomials, mixture model
+> parameterization, or mixture-specific candidate sets) are **not** supported.
+> The algorithm treats such constraints as standard linear constraints rather
+> than a true mixture design, and in practice they can leave too few feasible
+> candidates for optimization (see "Warnings and Error Messages").
 
 ### Constraint Workflow
 
@@ -173,110 +180,101 @@ true mixture design."
    - Check all constraints
    - Keep if feasible, discard if not
 
-3. Multi-layer defense against insufficient candidates:
-   
-   Layer 1: Critical shortage (< n_runs)
-   → Attempt augmentation via rejection sampling
-   → If still insufficient: raise ValueError
-   
-   Layer 2: Low density (< 5×n_runs)
-   → Warn user
-   → Attempt augmentation
-   → Proceed with best available
-   
-   Layer 3: Sufficient (≥ 5×n_runs)
-   → Proceed normally
+3. Multi-layer handling of insufficient feasible candidates:
+   - If feasible candidates < n_runs:
+     → Warn: "Only N feasible candidates found, need M runs. Attempting augmentation..."
+     → Augment via rejection sampling (up to 10000 attempts, target max(2×n_runs, 5×n_runs, 10×p))
+     → If STILL < n_runs: raise ValueError
+   - Else if feasible candidates < max(5×n_runs, 10×p):
+     → Warn: "Low candidate density: N feasible candidates."
+     → Proceed with the feasible pool (no augmentation)
+   - Else: proceed normally
 
 4. Optimize using only feasible candidates
 ```
 
 ### Augmentation via Rejection Sampling
 
-When constraints create a small feasible region:
-
 ```python
-def augment_constrained_candidates():
-    while need_more_candidates and attempts < 10000:
-        # Sample uniformly in [-1, 1]^k
-        point = random_uniform(-1, 1, size=k)
-        
-        # Check feasibility
-        if satisfies_all_constraints(point):
-            accept(point)
-            
-    return augmented_pool
+# Sample uniformly in [-1, 1]^k and accept points that satisfy all constraints.
+# Stops when the target size is reached or after max_attempts (default 10000).
+augment_constrained_candidates(
+    factors=factors,
+    existing_candidates=feasible_pool,
+    is_feasible=is_feasible,
+    target_size=needed_size,
+    seed=seed,
+)
 ```
 
-**Acceptance rate tracking:**
-- >5%: Good feasible region
-- 1-5%: Tight but workable
-- <1%: Very restrictive (warning issued)
-- <0.1%: Likely infeasible (suggest relaxing constraints)
+**Acceptance-rate warning:** if the acceptance rate during augmentation is below 1%, a warning is issued:
+
+```
+UserWarning: Very low feasible region: 0.12% acceptance rate. Constraints may
+be too restrictive. Only found 5 additional feasible points after 10000 attempts.
+```
 
 ---
 
 ## Candidate Pool Generation
 
-### Strategy: Dimension-Aware Stratified Sampling
+### Strategy: Structured Points + Naive LHS
 
-The candidate pool combines structured and random points:
+The candidate pool combines structured and random points (no boundary/interior stratification — the optimizer decides):
 
 **1. Structured Points:**
-- **Vertices:** All 2^k corners of [-1, 1]^k hypercube
-- **Axial points:** 2k star points along each axis
-- **Center point:** Origin (0, 0, ..., 0)
+- **Vertices:** all 2^k corners of the [-1, 1]^k hypercube (`include_vertices`, default True)
+- **Axial points:** 2k star points at ±α along each axis (`include_axial`, default True; `alpha_axial`, default 1.0 i.e. on the cube faces)
+- **Center point:** origin (0, 0, ..., 0) (`include_center`, default True)
 
-**2. Stratified LHS:**
-- Generate Latin Hypercube sample
-- Stratify by boundary proximity:
-  - 80% near boundaries (max|xᵢ| ≥ 0.75)
-  - 20% interior points
-- **Rationale:** Boundary points often optimal for polynomial models
+**2. Naive LHS:**
+- `n_runs × lhs_multiplier` Latin Hypercube points scaled to [-1, 1] (`lhs_multiplier`, default 5)
+- **No** stratification by boundary proximity (80/20 split) and **no** dimension-dependent size scaling
 
-**3. Size Scaling:**
-```
-k ≤ 3:  300 raw LHS → 50 final candidates
-k = 4-5: 500 raw LHS → 100 final candidates
-k ≥ 6:  1000 raw LHS → 150 final candidates
-```
+**3. Deduplication:**
+- Points are rounded to 6 decimals and duplicates removed (`np.unique`)
 
-**Total pool size:** ~70-200 candidates depending on k
+**Total pool size:** ≈ 2^k + 2k + 1 + n_runs × lhs_multiplier after deduplication
+(e.g. k=4, n_runs=20, lhs_multiplier=5 → ≈ 16 + 8 + 1 + 100 = 125).
+
+> The pool defaults (`lhs_multiplier=5`, `alpha_axial=1.0`, structured points
+> always on) reflect the current validated implementation defaults and may
+> evolve in future releases.
 
 ### Why This Strategy?
 
-- **Vertices:** Guarantee factorial-like structure (important for linear models)
-- **Axial points:** Enable CCD-like designs (important for quadratic models)
-- **Boundary emphasis:** Polynomial models often have optima at boundaries
-- **Interior points:** Ensure central coverage, avoid extrapolation issues
-- **Dimension scaling:** Avoid unnecessary overhead for small problems
+- **Vertices:** guarantee factorial-like structure (important for linear models)
+- **Axial points:** enable CCD-like designs (important for quadratic models)
+- **LHS interior fill:** give the optimizer flexible interior coverage
+- Constrained designs start from the same pool, decoded and filtered for feasibility
 
 ---
 
 ## Convergence Criteria
 
-The optimizer stops when any of these conditions is met:
+The optimizer stops when any of these conditions is met (all parameters are fields of `OptimizerConfig`):
 
-### 1. Stability (Primary)
+### 1. Stability (No Improvement)
 ```
-If no improvement for 15 consecutive iterations:
+If no improvement for stability_window (default 15) consecutive iterations:
     STOP ("stability")
 ```
 
-### 2. Diminishing Returns
+### 2. Relative Improvement Tolerance
 ```
-If relative improvement < 0.01% over last 15 iterations:
-    rel_improvement = (logdet_new - logdet_old) / |logdet_old|
-    if rel_improvement < 1e-4:
-        STOP ("stability")
+If relative improvement < relative_improvement_tolerance (default 1e-4)
+over the last stability_window iterations:
+    rel_improvement = (objective_new - objective_old) / |objective_old|
+    STOP ("stability")
 ```
 
 ### 3. Safety Limit
 ```
-If iterations ≥ 200:
+If iterations ≥ max_iterations (default 200):
     STOP ("max_iterations")
 ```
 
-**Multiple starts:** Run 3 independent optimizations with different random initializations, return best across all starts. This helps avoid local optima.
+**Multiple starts:** `n_random_starts` (default 3) independent optimizations with different random initializations are run; the best objective across starts is returned. This helps avoid local optima.
 
 ---
 
@@ -284,13 +282,13 @@ If iterations ≥ 200:
 
 ### 1. D-Efficiency vs Benchmark
 ```
-Primary metric: Efficiency relative to standard design
+D-efficiency relative to the standard design benchmark:
 - Linear models: vs Full Factorial 2^k
-- Quadratic models: vs CCD (rotatable)
+- Interaction/quadratic models: vs Face-Centered CCD (alpha='face')
 
-Expected values:
-- Linear: 90-100%
-- Quadratic: 100-120% (D-optimal often beats CCD)
+Expected values (warnings are issued when these are missed):
+- Linear:    ≥90%   (typical ≈ 100%)
+- Quadratic: ≥100%  (typical 110-120%)
 ```
 
 ### 2. Condition Number
@@ -298,10 +296,9 @@ Expected values:
 κ(X'X) = λ_max / λ_min
 
 Interpretation:
-- <10: Excellent (well-conditioned)
+- <10:  Excellent (well-conditioned)
 - 10-100: Good
-- 100-1000: Acceptable (warning issued)
-- >1000: Poor (ill-conditioned, parameter estimates unreliable)
+- >100:  Warning issued ("High condition number (X.X).")
 ```
 
 ### 3. Determinant
@@ -322,12 +319,16 @@ If rank < p: Design is singular (cannot estimate all parameters)
 
 ## Usage Examples
 
-### Example 1: Simple Quadratic Design
+> The primary API is `generate_optimal_design(factors, model_type, n_runs,
+> criterion, ...)` where `criterion` is the string `'D'` or `'I'`. Example
+> outputs below are from the current implementation defaults and may evolve
+> in future releases.
+
+### Example 1: Simple Quadratic Design (D-optimal)
 
 ```python
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
-from src.core.optimal.optimizer import OptimalDesignOptimizer
-from src.core.optimal.criteria import DOptimalityCriterion
+from src.core.optimal.design_generation import generate_optimal_design
 
 # Define factors
 factors = [
@@ -340,75 +341,47 @@ factors = [
 ]
 
 # Generate D-optimal design
-optimizer = OptimalDesignOptimizer(
+result = generate_optimal_design(
     factors=factors,
     model_type='quadratic',
     n_runs=20,
-    criterion=DOptimalityCriterion(),
+    criterion='D',
     seed=42
 )
-result = optimizer.optimize()
 
 print(f"Condition number: {result.condition_number:.2f}")
 print(f"Converged by: {result.converged_by}")
-print(f"\n{result.design_actual}")
+print(f"Iterations: {result.n_iterations}")
+print(f"D-efficiency: {result.d_efficiency_vs_benchmark}%")
+print(f"Benchmark: {result.benchmark_design_name}")
+print(f"\n{result.design_actual.head()}")
 ```
 
-**Expected output:**
+**Expected output** (with `seed=42`; the exact values depend on the current
+implementation defaults and may shift in future releases):
+
 ```
-Condition number: 12.4
+Condition number: 27.34
 Converged by: stability
+Iterations: 15
+D-efficiency: 115.15%
+Benchmark: Face-Centered CCD (k=3)
 
-   StdOrder  RunOrder  Temperature  Pressure  Time
-0         1         1        200.0      50.0  30.0
-1         2         2        100.0      50.0  30.0
+   StdOrder  RunOrder  Temperature  Pressure   Time
+0         1         1        100.0      50.0   30.0
+1         2         2        100.0      50.0  120.0
+2         3         3        100.0      10.0   30.0
+3         4         4        200.0      10.0  120.0
 ...
 ```
 
-### Example 2: Constrained Design (Mixture)
+### Example 2: Constrained Design
 
 ```python
+from src.core.optimal.design_generation import generate_optimal_design
 from src.core.optimal.constraints import LinearConstraint
 
-# Mixture factors (must sum to 1)
-factors = [
-    Factor("Component_A", FactorType.CONTINUOUS,
-           ChangeabilityLevel.EASY, levels=[0, 1]),
-    Factor("Component_B", FactorType.CONTINUOUS,
-           ChangeabilityLevel.EASY, levels=[0, 1]),
-    Factor("Component_C", FactorType.CONTINUOUS,
-           ChangeabilityLevel.EASY, levels=[0, 1])
-]
-
-# Sum constraint
-constraint = LinearConstraint(
-    coefficients={'Component_A': 1.0, 'Component_B': 1.0, 'Component_C': 1.0},
-    bound=1.0,
-    constraint_type='eq'
-)
-
-optimizer = OptimalDesignOptimizer(
-    factors=factors,
-    model_type='quadratic',
-    n_runs=15,
-    criterion=DOptimalityCriterion(),
-    constraints=[constraint],
-    seed=42
-)
-result = optimizer.optimize()
-
-# Verify constraint satisfaction
-for i in range(result.n_runs):
-    a = result.design_actual.iloc[i]['Component_A']
-    b = result.design_actual.iloc[i]['Component_B']
-    c = result.design_actual.iloc[i]['Component_C']
-    assert abs(a + b + c - 1.0) < 1e-6
-```
-
-### Example 3: Process Constraints
-
-```python
-# Chemical process with safety limits
+# Chemical process with a safety/temperature-pressure bound
 factors = [
     Factor("Temperature", FactorType.CONTINUOUS,
            ChangeabilityLevel.EASY, levels=[150, 250]),
@@ -418,39 +391,77 @@ factors = [
            ChangeabilityLevel.EASY, levels=[0, 5])
 ]
 
-constraints = [
-    # High temp requires low pressure (safety)
-    LinearConstraint(
-        coefficients={'Temperature': 1.0, 'Pressure': 2.0},
-        bound=350.0,
-        constraint_type='le'
-    ),
-    # Minimum catalyst at high temperature
-    LinearConstraint(
-        coefficients={'Temperature': 1.0, 'Catalyst': -20.0},
-        bound=100.0,
-        constraint_type='le'  # Catalyst ≥ (Temp - 100)/20
-    )
-]
+# High temperature requires low pressure (safety): Temp + 2·Pressure ≤ 350
+constraint = LinearConstraint(
+    coefficients={'Temperature': 1.0, 'Pressure': 2.0},
+    bound=350.0,
+    constraint_type='le'
+)
 
-optimizer = OptimalDesignOptimizer(
+result = generate_optimal_design(
     factors=factors,
     model_type='interaction',
     n_runs=15,
-    criterion=DOptimalityCriterion(),
-    constraints=constraints,
+    criterion='D',
+    constraints=[constraint],
     seed=42
 )
-result = optimizer.optimize()
+
+# Verify constraint satisfaction
+combo = (result.design_actual['Temperature']
+         + 2 * result.design_actual['Pressure'])
+assert (combo <= 350.0 + 1e-9).all()
+print(f"D-efficiency: {result.d_efficiency_vs_benchmark}%")
+print(f"Condition number: {result.condition_number:.2f}")
 ```
+
+For this example the current output is a D-efficiency of ≈117% and a condition
+number ≈2.0, with no warnings (the constraint does not degrade the design).
+
+### Example 3: I-Optimal Design
+
+Same API with `criterion='I'`; the design minimizes the average prediction
+variance across a prediction grid instead of maximizing |X'X|:
+
+```python
+result_i = generate_optimal_design(
+    factors=factors,
+    model_type='quadratic',
+    n_runs=20,
+    criterion='I',
+    prediction_grid_config={'n_points_per_dim': 7},
+    seed=42
+)
+
+print(f"Criterion: {result_i.criterion_type}")       # I-optimal
+print(f"I-criterion: {result_i.i_criterion:.3f}")
+print(f"I-efficiency: {result_i.i_efficiency_vs_benchmark}%")
+print(f"D-efficiency (also reported): {result_i.d_efficiency_vs_benchmark}%")
+print(f"Benchmark: {result_i.benchmark_design_name}")
+```
+
+`generate_d_optimal_design(...)` is a convenience wrapper that calls
+`generate_optimal_design(..., criterion='D')`.
 
 ---
 
 ## Configuration Options
 
-Configuration dataclasses (`CandidatePoolConfig`, `OptimizerConfig`) live in
-`src/core/optimal/` — see the module docstrings for the full list of fields
-and defaults.
+Configuration dataclasses in `src/core/optimal/`:
+
+**`CandidatePoolConfig`** (`src/core/optimal/candidates.py`):
+- `lhs_multiplier=5` — generate n_runs × lhs_multiplier LHS points
+- `include_vertices=True`, `include_axial=True`, `include_center=True`
+- `alpha_axial=1.0` — distance of axial points (1.0 = cube faces)
+
+**`OptimizerConfig`** (`src/core/optimal/optimizer.py`):
+- `max_iterations=200`, `relative_improvement_tolerance=1e-4`
+- `stability_window=15`, `n_random_starts=3`
+- `max_candidates_per_row=50`, `use_sherman_morrison=True`
+
+`candidate_config=` and `optimizer_config=` are passed to
+`generate_optimal_design`. Defaults reflect the current validated
+implementation and may evolve in future releases.
 
 ---
 
@@ -459,61 +470,63 @@ and defaults.
 ### Error: Insufficient Feasible Candidates
 
 ```
-ValueError: Even after augmentation, only 8 feasible candidates found 
-(need 12 runs). Constraints are too restrictive or infeasible.
+ValueError: Even after augmentation, only 8 feasible candidates found (need 12 runs).
 ```
 
-**Cause:** Constraints eliminate too many candidates, even after rejection sampling.
+**Cause:** Constraints eliminate too many candidates, even after rejection
+sampling. This typically happens with very tight or equality constraints
+(e.g. a mixture-style `x1 + x2 + x3 = 1` on a discrete candidate pool).
 
 **Solutions:**
-1. Relax constraints (reduce bounds, remove unnecessary constraints)
+1. Relax the constraints (widen bounds, remove unnecessary constraints)
 2. Reduce n_runs
-3. Verify constraints are not contradictory
-4. Check that feasible region actually exists
+3. Verify that the constraints are not contradictory
+4. Check that a feasible region actually exists
 
 ### Warning: Low Candidate Density
 
 ```
-UserWarning: Low candidate density: 18 feasible candidates for 12 runs 
-(recommended: ≥60). Attempting to improve density via rejection sampling...
+UserWarning: Low candidate density: 18 feasible candidates.
 ```
 
-**Cause:** Have enough candidates for design, but not enough for optimizer to find good swaps.
+**Cause:** Enough feasible candidates for the runs, but below
+`max(5×n_runs, 10×p)` that the optimizer prefers for good swaps. The code
+warns and proceeds with the feasible pool (it does not augment in this branch).
 
 **Impact:** Design quality may be suboptimal (lower efficiency, higher condition number).
 
 **Solutions:**
-1. Usually no action needed (augmentation will attempt to fix)
-2. If augmentation fails, consider relaxing constraints
-3. Monitor D-efficiency in results
+1. Usually no action needed
+2. For better quality, relax constraints or increase the pool (`lhs_multiplier`)
+3. Monitor D-efficiency and condition number in the results
 
 ### Warning: Low D-Efficiency
 
 ```
-UserWarning: D-efficiency vs Full Factorial 2^3: 72.4%. 
-Expected >90% for linear models. Consider more runs or fewer constraints.
+# Linear model, <90%:
+UserWarning: D-efficiency: 72.40%. Expected >90% for linear models.
+
+# Interaction/quadratic model, <100%:
+UserWarning: D-efficiency: 85.78%. Expected ≥100% for quadratic.
 ```
 
-**Cause:** Design quality below expected threshold.
+**Cause:** Design quality below the expected threshold for the model type.
 
-**For linear models (<90%):**
+**Likely reasons:**
 - Constraints are too restrictive
 - Insufficient runs for model complexity
 - Infeasible region poorly sampled
 
-**For quadratic models (<100%):**
-- Less common (D-optimal usually beats CCD)
-- May indicate numerical issues or very tight constraints
-
 ### Warning: High Condition Number
 
 ```
-UserWarning: High condition number (347.2). Design may be ill-conditioned.
+UserWarning: High condition number (194.3).
 ```
 
-**Cause:** X'X matrix is nearly singular (some combinations of parameters are hard to estimate independently).
+**Cause:** X'X is nearly singular (some combinations of parameters are hard to
+estimate independently). Issued whenever the condition number exceeds 100.
 
-**Impact:** 
+**Impact:**
 - Parameter estimates will have large standard errors
 - Predictions may be unreliable
 - Numerical instability in ANOVA
@@ -521,8 +534,8 @@ UserWarning: High condition number (347.2). Design may be ill-conditioned.
 **Solutions:**
 1. Add more runs
 2. Remove highly correlated factors
-3. Simplify model (use 'linear' or 'interaction' instead of 'quadratic')
-4. Check if constraints force correlations between factors
+3. Simplify the model (use 'linear' or 'interaction' instead of 'quadratic')
+4. Check whether constraints force correlations between factors
 
 ---
 
@@ -531,21 +544,22 @@ UserWarning: High condition number (347.2). Design may be ill-conditioned.
 ### Current Limitations
 
 1. **Continuous factors only**
-   - Categorical and discrete numeric factors not supported
-   - Workaround: Create separate designs for each categorical level
+   - Categorical and discrete-numeric factors are not supported
+   - Workaround: create separate designs for each categorical level
 
 2. **Linear constraints only**
    - No disallowed combinations (e.g., "If Material=A, then Temp<180")
    - No nonlinear constraints (e.g., x₁² + x₂² ≤ 1)
 
-3. **D-optimality and I-optimality supported**
+3. **D-optimality and I-optimality are both supported** (`criterion='D' | 'I'`)
    - A-optimal (minimize trace) not available
    - G-optimal (minimize maximum prediction variance) not available
 
-4. **Mixture designs not yet supported**
-   - Equality constraints like x1 + x2 + x3 = 1 are allowed, but the algorithm
-     does not implement mixture-specific model structures (Scheffé models),
-     simplex candidate sets, or mixture geometry.
+4. **Mixture designs not supported**
+   - Equality constraints like x1 + x2 + x3 = 1 can be specified, but the
+     algorithm does not implement mixture-specific model structures (Scheffé
+     models), simplex candidate sets, or mixture geometry, and in practice such
+     constraints often leave too few feasible candidates
 
 ### Planned Enhancements (Post-MVP)
 
@@ -559,120 +573,24 @@ UserWarning: High condition number (347.2). Design may be ill-conditioned.
 
 3. **Additional optimality criteria**
    - A-optimal (minimize trace, better for parameter estimation)
-   - User-selectable criterion (D and I currently supported)
-
-4. **Fedorov exchange algorithm**
-   - Alternative to CEXCH
-   - May perform better on some problems
-
-5. **Design augmentation**
-   - Add runs to existing designs
-   - Sequential experimentation workflow
+   - G-optimal (minimize maximum prediction variance, better for prediction)
 
 ---
 
-## Algorithm Complexity
+## Validation Against Known Designs
 
-### Time Complexity
-
-**Per iteration:**
-```
-O(n_runs × n_candidates × p²)
-```
-
-Where:
-- n_runs: Number of design points
-- n_candidates: Size of candidate pool
-- p: Number of model parameters
-
-**With Sherman-Morrison:** Matrix operations are O(p²), not O(p³) (full inversion)
-
-**Total:** 
-```
-O(n_iterations × n_runs × n_candidates × p²)
-```
-
-Typical: 50 iterations × 20 runs × 100 candidates × 10² = 10⁷ operations
-
-**Expected runtime:**
-- Small (k≤3, n≤20): <1 second
-- Medium (k=4-5, n=30): 1-5 seconds
-- Large (k≥6, n≥50): 5-30 seconds
-
-### Space Complexity
-
-```
-O(n_candidates × k + p²)
-```
-
-- Candidate pool: O(n_candidates × k)
-- Information matrix and inverse: O(p²)
-
-**Memory:** Typically <10 MB for k≤7, n≤100
-
----
-
-## Validation
-
-### Test Coverage
-
-The implementation includes 83+ comprehensive tests:
-
-1. **Basic functionality** (5 tests)
-   - Linear, interaction, quadratic models
-   - Reproducibility with seeds
-
-2. **Constraint handling** (9 tests)
-   - Sum, bound, equality constraints
-   - Multiple simultaneous constraints
-   - Mixture designs
-   - Infeasible constraint detection
-   - Augmentation effectiveness
-
-3. **Input validation** (4 tests)
-   - Insufficient runs
-   - Saturated designs
-   - Non-continuous factors
-
-4. **Design quality** (4 tests)
-   - Determinant positivity
-   - Full rank verification
-   - Efficiency calculations
-
-5. **Algorithm convergence** (3 tests)
-   - Multiple starts effectiveness
-   - Convergence tracking
-   - Iteration limits
-
-6. **Sherman-Morrison accuracy** (3 tests)
-   - Numerical correctness
-   - Intermediate reuse
-   - Singular case handling
-
-7. **Benchmark comparisons** (3 tests)
-   - vs Full Factorial for linear
-   - vs CCD for quadratic
-   - Efficiency improvements
-
-8. **Integration scenarios** (3 tests)
-   - Realistic screening experiments
-   - Process optimization
-   - Response surface with constraints
-
-### Validation Against Known Designs
+The generated designs are validated against standard references:
 
 **Full Factorial (Linear):**
-```python
-# 2³ design, 8 runs, 4 parameters
-# Expected: D-efficiency ≈ 100% (D-optimal should match or slightly exceed)
-# Actual: 95-100% (numerical differences acceptable)
+```
+2^k design benchmark: D-optimal linear designs achieve ≈100% of the
+full factorial determinant (observed 100.0% for 2^3 with n_runs=8).
 ```
 
-**CCD (Quadratic):**
-```python
-# k=3, rotatable, ~20 runs, 10 parameters
-# Expected: D-efficiency ≥ 100% (D-optimal should beat CCD)
-# Actual: 105-115% (D-optimal is more efficient)
+**Face-Centered CCD (Quadratic):**
+```
+k=3, 20 runs, 10 parameters: D-optimal designs consistently exceed the
+Face-Centered CCD benchmark — observed ≈115% with the default configuration.
 ```
 
 ---

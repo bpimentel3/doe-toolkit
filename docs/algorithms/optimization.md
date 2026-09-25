@@ -7,9 +7,14 @@ The optimization module provides methods for finding optimal factor settings bas
 **Key Features:**
 - Single-response optimization with three objectives
 - Multi-response desirability functions (Derringer & Suich method)
-- Linear constraint support
+- Optimization in **actual (natural) factor space** (results are directly interpretable)
+- Categorical and discrete-numeric factor support
+- Linear constraint support (single-response, numeric factors only)
 - Confidence and prediction intervals
-- Robust optimization with fallback strategies
+
+> Solver parameters shown below (`maxiter=500`, `popsize=20`, `ftol=1e-9`,
+> etc.) reflect the current validated implementation defaults and may evolve
+> in future releases.
 
 ---
 
@@ -32,29 +37,58 @@ where $T$ is the target value.
 **Factor Bounds:**
 $$x_i^{min} \leq x_i \leq x_i^{max} \quad \forall i$$
 
+The bounds are the factor's declared **actual-space** range: `[min_value, max_value]`
+for continuous and discrete-numeric factors, and the index range of the declared
+levels for categorical factors (later converted back to level labels).
+
 **Linear Constraints:**
-$$\sum_{i} a_i x_i \leq b \quad \text{(inequality)}$$
-$$\sum_{i} a_i x_i = b \quad \text{(equality)}$$
+$$\sum_{i} a_i x_i \leq b \quad \text{(inequality, 'le')}$$
+$$\sum_{i} a_i x_i \geq b \quad \text{(inequality, 'ge')}$$
+$$\sum_{i} a_i x_i = b \quad \text{(equality, 'eq')}$$
+
+Linear constraints **are honored for the pure-numeric single-response path**
+(they are converted to SciPy constraint objects for SLSQP). They are **ignored
+with a warning** when the design contains categorical factors or when optimizing
+desirability (see below).
 
 ### Optimization Algorithm
 
-The module uses **Sequential Least Squares Programming (SLSQP)** from `scipy.optimize`:
+The solver is chosen by the solver by design composition and objective:
 
-1. **Initialization:** Start from center of design space with optional random perturbation
-2. **Objective Function:** Construct objective based on model predictions
-3. **Optimization:** Use SLSQP with bounds and linear constraints
-4. **Fallback:** If SLSQP fails, retry with `differential_evolution` (global optimizer)
+1. **Pure-numeric single response:** `scipy.optimize.minimize(method='SLSQP')`
+   - Starting point: center of the search space, with an optional random
+     perturbation when a `seed` is supplied (uniform in [-0.1, 0.1] of each
+     range, clipped to the bounds)
+   - Options: `maxiter=500`, `ftol=1e-9`
+   - Bounds and linear constraints are passed to SLSQP directly
 
-**Why SLSQP?**
+2. **Categorical factors present (single response):**
+   `scipy.optimize.differential_evolution` with `integrality` on the
+   categorical index dimensions (`maxiter=500`, `popsize=20`, `polish=False`,
+   `seed=seed`). Linear constraints are ignored with a warning. If the
+   stochastic search fails to converge, the optimizer falls back to a full
+   enumeration of the categorical level combinations
+   (`_enumerate_categorical_best`).
+
+3. **Multi-response desirability:** always
+   `scipy.optimize.differential_evolution` (`maxiter=500`, `popsize=20`,
+   `polish=False`, `seed=seed`). Desirability is optimized globally because
+   the hard [0, 1] desirability bounds create a discontinuous objective that
+   gradient-based methods cannot navigate (the numerical gradient vanishes in
+   the flat d = 0 region).
+
+**Why SLSQP for numeric designs?**
 - Handles both bounds and linear constraints natively
 - Fast convergence for smooth response surfaces
 - Gradient-based (efficient for quadratic models)
 
-**Fallback Strategy:**
-If SLSQP fails to converge (e.g., non-convex surface, multiple local optima):
-- Switch to `differential_evolution` (genetic algorithm)
-- Slower but more robust for complex surfaces
-- Guarantees global search
+**Why differential_evolution for categorical / desirability?**
+- No gradient information needed
+- `integrality` handles categorical level indices directly
+- Global exploration is more robust for discontinuous objectives
+- Note: DE is **stochastic** — it explores globally but does not strictly
+  guarantee the global optimum; reruns with different seeds can be used to
+  confirm a stable solution
 
 ### Prediction Uncertainty
 
@@ -163,8 +197,9 @@ where:
    $$\max_{x} D(x) = \max_{x} \left(\prod_{i=1}^{n} d_i(\hat{y}_i(x))^{w_i}\right)^{1/\sum w_i}$$
 
 3. **Optimization:**
-   - Use SLSQP to maximize overall desirability
-   - Subject to factor bounds and linear constraints
+   - Use `differential_evolution` to maximize overall desirability
+   - Subject to factor bounds (in actual space); linear constraints are
+     **ignored with a warning** on this path
 
 4. **Result:**
    - Optimal settings $x^*$
@@ -182,7 +217,8 @@ Most response surface optimizations use quadratic models:
 
 $$y = \beta_0 + \sum_{i=1}^{k} \beta_i x_i + \sum_{i=1}^{k} \beta_{ii} x_i^2 + \sum_{i<j} \beta_{ij} x_i x_j + \varepsilon$$
 
-**Canonical Form:**
+**Canonical Form** *(theoretical background — not implemented in this app):*
+
 Transform to eliminate cross-product terms:
 
 $$y = y_s + \sum_{i=1}^{k} \lambda_i w_i^2$$
@@ -192,10 +228,17 @@ where:
 - $\lambda_i$: Eigenvalues (curvature along principal axes)
 - $w_i$: Canonical variables (rotated coordinates)
 
-**Optimum Classification:**
+**Optimum Classification** *(theoretical background — not implemented in this app):**
 - All $\lambda_i < 0$: Maximum (bowl-shaped down)
 - All $\lambda_i > 0$: Minimum (bowl-shaped up)
 - Mixed signs: Saddle point (minimax)
+
+The optimization module does not compute canonical ridge analysis, stationary
+points via eigenvalues, or the classification above. It directly searches for
+the optimum numerically over the factor ranges. (Canonical analysis is standard
+response-surface methodology — see the references — but is out of scope for the
+shipped optimizer, which relies on the numerical methods described in the
+"Algorithm" sections.)
 
 ### Analytical Optimum (Unconstrained)
 
@@ -209,37 +252,20 @@ $$\frac{\partial y}{\partial x_i} = \beta_i + 2\beta_{ii} x_i = 0$$
 
 $$x_i^* = -\frac{\beta_i}{2\beta_{ii}}$$
 
-**With Interactions:**
-
-For general quadratic model, stationary point:
-
-$$\mathbf{x}^* = -\frac{1}{2} \mathbf{B}^{-1} \mathbf{b}$$
-
-where:
-- $\mathbf{b}$: Vector of linear coefficients
-- $\mathbf{B}$: Matrix of quadratic/interaction coefficients
+*(Used as an analytical check in the test suite; the optimizer itself is numeric.)*
 
 ### Constrained Optimization
 
-When constraints are active at optimum, use Lagrange multipliers:
-
-$$\mathcal{L}(x, \lambda) = f(x) - \sum_{j} \lambda_j g_j(x)$$
-
-where $g_j(x) \leq 0$ are constraint functions.
-
-**Karush-Kuhn-Tucker (KKT) Conditions:**
-1. Stationarity: $\nabla f(x^*) = \sum \lambda_j \nabla g_j(x^*)$
-2. Primal feasibility: $g_j(x^*) \leq 0$
-3. Dual feasibility: $\lambda_j \geq 0$
-4. Complementary slackness: $\lambda_j g_j(x^*) = 0$
-
-SLSQP solves these conditions numerically.
+SLSQP solves constrained problems via a sequential quadratic programming
+approach with Lagrange multipliers and Karush-Kuhn-Tucker (KKT) optimality
+conditions. This is an internal property of the SLSQP algorithm; the module
+does not expose KKT/canonical analysis as a user-facing feature.
 
 ---
 
 ## Algorithm Details
 
-### SLSQP Method
+### SLSQP Method (numeric single-response path)
 
 **Sequential Least Squares Programming:**
 
@@ -257,12 +283,12 @@ At each iteration $k$:
 3. **Hessian Approximation:**
    Update $H_k$ using BFGS formula
 
-**Convergence Criteria:**
-- $|\nabla f(x_k)| < \text{ftol}$ (gradient small)
+**Convergence options (as configured):**
+- $|\nabla f(x_k)| < \text{ftol}$ (gradient small), `ftol=1e-9`
 - $|f(x_{k+1}) - f(x_k)| < \text{ftol}$ (objective change small)
-- Maximum iterations reached
+- Maximum iterations (`maxiter=500`)
 
-### Differential Evolution (Fallback)
+### Differential Evolution (categorical / desirability paths)
 
 **Global Optimization Strategy:**
 
@@ -284,54 +310,75 @@ At each iteration $k$:
 5. **Iteration:**
    Repeat until convergence or max generations
 
-**Why Use as Fallback?**
+**Why Use Differential Evolution Here?**
 - Robust for non-convex, multimodal surfaces
 - Doesn't require gradient information
-- Explores globally before converging
+- `integrality` maps cleanly onto categorical level indices
+- Handles the discontinuous desirability objective that gradients cannot
+
+**Configuration (current defaults):** `maxiter=500`, `popsize=20`,
+`polish=False`, `seed=seed` (reproducible when a seed is given; unseeded
+otherwise).
 
 ---
 
 ## Implementation Notes
 
-### Numerical Stability
+### Optimization Space and Scaling
 
-**Scaling:**
-All optimization operates on coded factor values $[-1, 1]$:
-$$x_{coded} = \frac{x_{actual} - x_{center}}{x_{range}/2}$$
+The optimizer works in **actual (natural) factor space** so results are
+directly interpretable:
 
-**Why?**
-- Improved numerical conditioning
-- Equal sensitivity across factors
-- Prevents ill-conditioning from different scales
+- Continuous factors search over `[min_value, max_value]`
+- Discrete-numeric factors search the same range and then **snap** to the
+  nearest declared level (`_nearest_level`)
+- Categorical factors search an integer index `[0, len(levels) - 1]` and map
+  back to level labels
 
-**Ridge Regularization:**
-For near-singular information matrices:
-$$(X^TX + \epsilon I)^{-1}$$
-where $\epsilon = 10^{-10}$
+The fitted model, however, may have been trained on **coded** values (e.g.
+CCD or fractional-factorial designs, which store coded columns). For those
+models pass `model_is_coded=True` to `optimize_response` /
+`optimize_desirability`; the optimizer then encodes its actual-space
+candidates back to coded space before calling `model.predict`.
+
+### Categorical Defaults and Pinned Levels
+
+- `pinned_levels={factor_name: level}` holds any categorical factor fixed at a
+  specified level while the remaining factors are optimized.
+- Without explicit pins, categorical factors default to their **first declared
+  level** (`_pinned_categorical_defaults`).
+
+### Nuisance Columns
+
+Fitted models from blocked or split-plot designs append nuisance terms such as
+`Block`, `WholePlot`, or `VeryHardPlot` to their formula. The optimizer pins
+these columns to their reference (first distinct) level in the prediction
+frame so their influence is ignored — the block/whole-plot effect is treated
+as a nuisance and does not drive the search.
+
+### Ridge Regularization
+
+Ridge regularization `(X'X + εI)^{-1}` with ε = 10⁻¹⁰ is **not** part of this
+module. It lives in the **optimal-design generation** machinery
+(`src/core/optimal/criteria.py`, `src/core/optimal/optimizer.py`) and in
+`src/core/diagnostics/estimability.py`, where it protects determinant
+computations for near-singular information matrices. The response optimizer
+itself does not perform ridge regularization.
 
 ### Convergence Diagnostics
 
-**Success Indicators:**
-- `result.success == True`
-- Constraint satisfaction: $|g_j(x^*)| < 10^{-6}$
-- First-order conditions: $|\nabla f(x^*)| < 10^{-9}$
+- SLSQP path: report `result.success`, the achieved objective, and the
+  iteration count. The `ftol=1e-9` gradient/objective-change threshold applies
+  to this path only.
+- DE paths: report `result.success` plus the same objective/iteration info; the
+  gradient-based first-order condition does **not** apply to the DE/desirability
+  paths.
 
-**Failure Modes:**
-- "Maximum iterations": Increase `maxiter`
-- "Singular matrix": Check for factor aliasing
-- "Infeasible constraints": Relax constraint bounds
-
-### Computational Complexity
-
-**Per Iteration:**
-- Objective evaluation: $O(p)$ where $p$ = number of model parameters
-- Gradient evaluation: $O(kp)$ for $k$ factors
-- Hessian update (BFGS): $O(k^2)$
-- QP subproblem: $O(k^3)$
-
-**Total:** $O(n_{iter} \cdot k^3)$ for SLSQP
-
-**Differential Evolution:** $O(N_p \cdot n_{gen} \cdot p)$ where $N_p$ = population size
+**Typical failure signals and remedies:**
+- SLSQP "maximum iterations": increase `maxiter`, or reconsider the model/bounds
+- SLSQP "singular matrix": check for factor aliasing or near-collinear terms
+- DE fallback enumeration triggered for categorical designs: confirm factor
+  ranges and pinned levels so the search region is not degenerate
 
 ---
 
@@ -344,7 +391,7 @@ where $\epsilon = 10^{-10}$
    - Verify numerical optimizer finds analytical optimum
 
 2. **Constraint Satisfaction:**
-   - All test cases verify constraints satisfied at optimum
+   - Test cases verify constraints are satisfied at the optimum
    - Tolerance: $10^{-6}$
 
 3. **Multi-Response Trade-offs:**
@@ -370,6 +417,10 @@ where $\epsilon = 10^{-10}$
 3. Optimize using `optimize_response(..., objective='maximize')`
 4. Verify: $|x_i^* - 0| < 0.2$ and $|y^* - 10| < 0.5$
 
+The module has a dedicated test suite (`tests/test_optimization.py`) covering
+these scenarios, including categorical, discrete-numeric, pinned-level, and
+desirability cases.
+
 ---
 
 ## References
@@ -390,6 +441,7 @@ where $\epsilon = 10^{-10}$
 3. **Box, G. E. P., & Draper, N. R. (2007).**
    *Response Surfaces, Mixtures, and Ridge Analyses*, 2nd Edition. Wiley.
    - Chapter 10: Multiple Response Surface Optimization
+   - Canonical and ridge analysis (background for this document)
 
 ### Optimization Algorithms
 
@@ -464,26 +516,29 @@ where $\epsilon = 10^{-10}$
 
 ### Issue: Optimizer finds boundary optimum
 
-**Symptom:** Optimal settings at factor limits ($x_i^* = \pm 1$)
+**Symptom:** Optimal settings at factor limits ($x_i^* = \min$ or $\max$)
 
 **Diagnosis:**
-- Response increasing/decreasing monotonically
-- No curvature detected (linear model sufficient)
+- Response increasing/decreasing monotonically over the range
+- No usable curvature (linear model sufficient)
 
 **Solutions:**
-1. Expand design space (move factor bounds)
-2. Add axial points for curvature estimation
-3. Accept boundary optimum if further expansion infeasible
+1. Expand the design space (move factor bounds)
+2. Add axial/center points to the experiment to estimate curvature
+3. Accept the boundary optimum if further expansion is infeasible
 
 ### Issue: Multiple local optima suspected
 
-**Symptom:** Different starting points yield different optima
+**Symptom:** Different starting points yield different optima for a numeric-only
+design (SLSQP is a local optimizer)
 
 **Solutions:**
-1. Use `differential_evolution` (global optimizer)
-2. Run optimization from multiple random starts
-3. Visualize response surface (contour plots)
-4. Check for ridge systems or saddle points
+1. Rerun with different `seed` values and compare (the seed perturbs the
+   SLSQP starting point)
+2. For categorical or desirability problems, rely on the built-in global
+   `differential_evolution` path and confirm stability across seeds
+3. Visualize the response surface (contour plots)
+4. Narrow the search bounds around the region of interest
 
 ### Issue: Conflicting responses with no good compromise
 
@@ -492,7 +547,7 @@ where $\epsilon = 10^{-10}$
 **Solutions:**
 1. Reassess specifications (are they realistic?)
 2. Check for interactions between responses
-3. Consider sequential optimization (optimize primary first)
+3. Consider sequential optimization (optimize the primary response first)
 4. Add experiments in underexplored regions
 
 ### Issue: Prediction intervals very wide
@@ -503,7 +558,7 @@ where $\epsilon = 10^{-10}$
 1. Add replicates to reduce pure error
 2. Add center points to estimate curvature better
 3. Check for outliers or unusual runs
-4. Consider transforming response (variance stabilization)
+4. Consider transforming the response (variance stabilization)
 
 ---
 
@@ -526,15 +581,3 @@ where $\epsilon = 10^{-10}$
 4. **Mixture Design Optimization:**
    - Simplex constraints ($\sum x_i = 1$)
    - Specialized desirability for mixtures
-
-### Implementation Complexity
-
-- **Robust Design:** Medium (requires variance modeling)
-- **Pareto Fronts:** High (requires multi-objective algorithms)
-- **Bayesian:** Very High (requires Gaussian process models)
-- **Mixtures:** Low (constraint modification only)
-
----
-
-**Last Updated:** Session 10 complete
-**Status:** Production ready, all tests passing

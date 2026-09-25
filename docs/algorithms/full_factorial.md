@@ -62,6 +62,12 @@ Coding:
 x_actual = x_center + x_coded × (x_range / 2)
 ```
 
+> **Output units:** The generator builds the design on the coded grid above,
+> then **decodes continuous factors to natural (real-world) units automatically
+> before returning**. The returned DataFrame therefore contains values such as
+> `150.0`/`200.0`, not `-1`/`+1`, and no manual decoding is required. Coded
+> levels remain relevant for the analysis stage, which re-encodes internally.
+
 ### Design Properties
 
 **Orthogonality:**
@@ -86,8 +92,8 @@ Full factorial designs are D-optimal for estimating all main effects and interac
 1. **Factor Level Extraction**
    ```
    For each factor:
-     - Continuous: Use coded levels [-1, +1]
-     - Discrete Numeric: Use actual values
+     - Continuous: coded grid {-1, +1} (decoded to natural units on return)
+     - Discrete Numeric: use actual values
      - Categorical: Use level labels
    ```
 
@@ -96,10 +102,16 @@ Full factorial designs are D-optimal for estimating all main effects and interac
    combinations = itertools.product(*factor_levels)
    ```
    This efficiently generates all combinations without explicit nested loops.
+   The first factor varies slowest in the product order (the standard order).
 
 3. **Center Points** (optional)
-   - Added for continuous factors only
-   - Coded as 0 for all continuous factors
+   - Added only when the design includes at least one continuous factor;
+     with no continuous factors, no center runs are emitted
+   - Internally coded as 0, then decoded to the natural midpoint of each
+     continuous factor; discrete numeric factors take their middle level
+     (lower-middle when the number of levels is even) and categorical
+     factors take their first level
+   - Appended after the factorial points (rows 9+ when there are 8 factorial runs)
    - Provides estimate of pure error
    - Allows testing for curvature (quadratic effects)
 
@@ -114,16 +126,6 @@ Full factorial designs are D-optimal for estimating all main effects and interac
      - Sequentially (if randomized)
      - Interleaved (if not randomized)
 
-### Computational Complexity
-
-**Time Complexity:**
-- Generation: O(∏Lᵢ) where Lᵢ is the number of levels for factor i
-- This is optimal as we must generate all combinations
-
-**Space Complexity:**
-- O(n × k) where n is total runs, k is number of factors
-- Storage for the design matrix
-
 ### Example Calculation
 
 **Problem:** Design a 2³ factorial experiment
@@ -135,27 +137,34 @@ Full factorial designs are D-optimal for estimating all main effects and interac
 
 **Solution:**
 
-1. **Code factors:**
-   - A: {-1, +1} for {150, 200}
-   - B: {-1, +1} for {50, 100}
-   - C: {-1, +1} for {10, 20}
+1. **Internal coding:** each factor is placed on the coded grid `{-1, +1}`
+   (`A → 150/200`, `B → 50/100`, `C → 10/20`), and the Cartesian product is
+   built with the first factor varying slowest.
 
-2. **Generate combinations:**
-   ```
-   Run  A   B   C
-   1   -1  -1  -1
-   2   +1  -1  -1
-   3   -1  +1  -1
-   4   +1  +1  -1
-   5   -1  -1  +1
-   6   +1  -1  +1
-   7   -1  +1  +1
-   8   +1  +1  +1
-   ```
+2. **Returned design** (`randomize=False`, natural units — the actual output
+   as returned):
+
+   | Row | StdOrder | RunOrder | Temperature | Pressure | Time |
+   |-----|----------|----------|-------------|----------|------|
+   | 1 | 1 | 1 | 150 | 50 | 10 |
+   | 2 | 2 | 2 | 150 | 50 | 20 |
+   | 3 | 3 | 3 | 150 | 100 | 10 |
+   | 4 | 4 | 4 | 150 | 100 | 20 |
+   | 5 | 5 | 5 | 200 | 50 | 10 |
+   | 6 | 6 | 6 | 200 | 50 | 20 |
+   | 7 | 7 | 7 | 200 | 100 | 10 |
+   | 8 | 8 | 8 | 200 | 100 | 20 |
 
 3. **Total runs:** 2³ = 8
 
-4. **If adding 3 center points:** 8 + 3 = 11 total runs
+4. **If adding 3 center points:** 8 + 3 = 11 total runs. The three center
+   rows (StdOrder 9–11) sit at the factor midpoints **175 / 75 / 15**:
+
+   | Row | StdOrder | RunOrder | Temperature | Pressure | Time |
+   |-----|----------|----------|-------------|----------|------|
+   | 9 | 9 | 9 | 175 | 75 | 15 |
+   | 10 | 10 | 10 | 175 | 75 | 15 |
+   | 11 | 11 | 11 | 175 | 75 | 15 |
 
 ## Advantages and Limitations
 
@@ -224,6 +233,11 @@ Adding center points:
 - Provides pure error estimate
 - Efficient way to check model adequacy
 - Typical: 3-5 center points
+- In the returned design they appear at the natural midpoints of the
+  continuous factors (e.g. 175 for a [150, 200] range)
+- When `n_replicates > 1`, the replicates repeat the full base design
+  (factorial points **and** center points), each group tagged via the
+  `Replicate` column
 
 ### Blocking
 
@@ -252,4 +266,8 @@ For randomization, we use NumPy's random number generator with optional seed for
 - Debugging
 - Comparing designs
 
-The blocking algorithm uses a greedy assignment strategy that balances runs across blocks as evenly as possible when the number of runs is not perfectly divisible by the number of blocks.
+The blocking algorithm assigns runs to blocks in run order: with randomization
+enabled, blocks are assigned sequentially over the already-shuffled runs
+(first `floor(n_runs / n_blocks)` runs → block 1, etc., with the first
+`n_runs mod n_blocks` blocks receiving one extra run); with randomization
+disabled, runs are interleaved round-robin across blocks.

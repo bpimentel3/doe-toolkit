@@ -22,6 +22,8 @@ Users define factors with meaningful names like "Temperature", "Pressure", "Cata
 
 ### Solution: Bidirectional Mapping
 
+`FactorMapper` builds a bidirectional mapping in factor order (`src/core/aliasing.py`):
+
 ```
 Real Names          Algebraic Symbols
 Temperature    <-->  A
@@ -33,17 +35,28 @@ Catalyst       <-->  E
 
 **Algorithm:**
 ```python
-# Create mapping in factor order
 for i, factor in enumerate(factors):
     symbol = chr(65 + i)  # A=65, B=66, ...
     real_to_algebraic[factor.name] = symbol
     algebraic_to_real[symbol] = factor.name
 ```
 
-**Use cases:**
-- Parser accepts "E=ABCD" (algebraic)
-- Design matrix uses "Catalyst=Temperature*Pressure*Time*Speed" (real names)
-- Alias tables can show either format
+**Input vs. output convention:** generator **expressions** must be written with
+the single-letter **algebraic** symbols (`"E=ABCD"`). Real factor names are the
+**output-side** representation:
+- Alias tables can be rendered with real names by passing the mapper to
+  `format_alias_table(..., mapper=mapper)`.
+- Design matrix column labels use the real factor names.
+- `FactorMapper.translate_generator()` converts a generator string between
+  forms (e.g. `translate_generator("E=ABCD", to_algebraic=False)` →
+  `"Catalyst=Temperature*Pressure*Time*Speed"`).
+
+Real-name generator strings are **not** accepted as user input to the design
+generator. Passing one fails syntax validation:
+
+```
+ValueError: Left side must be single factor: 'Catalyst=Temperature*Pressure*Time*Speed'
+```
 
 ## Generator Validation
 
@@ -65,11 +78,21 @@ Where:
 
 ### Semantic Validation
 
-**Check 1: Factors exist**
+**Check 1: Factors exist — and the LHS is a generated factor**
+
+The left side must be one of the **generated** factors, i.e. the (k − p) new
+factors introduced by the fraction. A base factor on the left side is rejected:
+
 ```
-Generator: E=ABCD
-Base factors available: {A, B, C, D}
-✓ All factors in expression exist
+Generator: A=BCD  (k=5, 1/2 fraction → generated factors are {E})
+ValueError: Generator 'A=BCD' must define a generated factor (expected one of E), not base factor 'A'
+```
+
+Every letter on the right side must be one of the base factors `A..D`:
+
+```
+Generator: E=XYZ
+ValueError: Factor 'X' in 'E=XYZ' not in base factors. Available: A, B, C, D
 ```
 
 **Check 2: Correct number of generators**
@@ -77,6 +100,9 @@ Base factors available: {A, B, C, D}
 Fraction 1/4 → p=2 → Need exactly 2 generators
 Provided: ["E=ABC", "F=BCD"]
 ✓ Correct count
+
+Provided: ["E=ABCD"] only
+ValueError: Expected 1 generators for 1/2 fraction, got 1
 ```
 
 **Check 3: Resolution achievable**
@@ -86,9 +112,8 @@ Defining relation: I = ABCD
 Min word length: 4
 Resolution: IV ✓
 
-Claimed resolution: V
-Actual resolution: IV
-✗ Mismatch → Error
+Claimed/generated resolution below target → error
+ValueError: Generators achieve Resolution 4, not 5 as specified
 ```
 
 ## Defining Relation Computation
@@ -129,13 +154,13 @@ def simplify_word(word: str) -> str:
     counts = {}
     for letter in word:
         counts[letter] = counts.get(letter, 0) + 1
-    
+
     # Keep only letters with odd count
     result = ""
     for letter in sorted(counts.keys()):
         if counts[letter] % 2 == 1:
             result += letter
-    
+
     return result
 ```
 
@@ -147,20 +172,17 @@ Generators: E=ABC, F=BCD
 Initial: I, ABCE, BCDF
 
 Multiply ABCE × BCDF:
-= ABCEBCDF
-= AABBCCDDEF  (rearrange)
-= CDEF  (A×A=I, B×B=I, C×C=I)
+= A·B·C·E·B·C·D·F
+= A·(B·B)·(C·C)·D·E·F     (collect like letters)
+= A·D·E·F                  (B×B=I, C×C=I)
 
 Defining Relation: {I, ABCE, BCDF, ADEF}
 ```
 
-### Computational Complexity
-
-- **Number of words:** 2^p (all subsets of generators)
-- **Simplification per word:** O(k log k) for sorting
-- **Total:** O(2^p × k log k)
-
-For typical designs (p ≤ 4), this is very fast.
+Note the simplification carefully: the B and C factors each appear twice and
+cancel, leaving **ADEF** (not CDEF). The same `AliasingEngine` computation
+reports `resolution = 4` for this design because every generator word has
+length 4.
 
 ## Alias Structure Computation
 
@@ -176,7 +198,7 @@ Equivalently: X is aliased with X × W for all W ≠ I.
 
 ### Algorithm
 
-**Input:** 
+**Input:**
 - Effects E = {A, B, AB, AC, ...} (all effects up to order 4)
 - Defining relation D = {I, W₁, W₂, ...}
 
@@ -223,25 +245,34 @@ Order 4 (4FI): ABCD, ABCE, ABDE, ...
 ```
 
 **Why stop at order 4?**
-- Higher-order interactions (5FI+) are typically negligible
-- Reduces computation
-- Sufficient for practical interpretation
+- Higher-order interactions (5FI+) are typically negligible in screening contexts
+- Practical size: full enumeration of all k-way products grows combinatorially
+- Sufficient for resolution V verification and main-effects-plus-2FI interpretation
 
 **Number of effects:**
 ```
 Total = C(k,1) + C(k,2) + C(k,3) + C(k,4)
 ```
 
-For k=8: 8 + 28 + 56 + 70 = 162 effects
+For k=8: 8 + 28 + 56 + 70 = 162 effects.
 
-### Computational Complexity
+**Real output example — 2^(5-1) half fraction (E=ABCD), rendered with real names:**
 
-- **Effects to consider:** O(k⁴)
-- **Words in defining relation:** O(2^p)
-- **Simplification per alias:** O(k log k)
-- **Total:** O(k⁴ × 2^p × k log k) = O(k⁵ log k × 2^p)
+```
+                        Effect                        Aliased_With
+                    Temperature  Pressure*Time*Speed*Catalyst
+                       Pressure  Temperature*Time*Speed*Catalyst
+                           Time  Temperature*Pressure*Speed*Catalyst
+                          Speed  Temperature*Pressure*Time*Catalyst
+                       Catalyst  Temperature*Pressure*Time*Speed
+               Temperature*Pressure          Time*Speed*Catalyst
+                 Temperature*Time      Pressure*Speed*Catalyst
+                        ...
+        Temperature*Pressure*Time*Speed                    Catalyst
+```
 
-For typical designs (k ≤ 10, p ≤ 4), this completes in milliseconds.
+Each main effect is aliased only with the corresponding 4FI; every 2FI is
+aliased with a 3FI — the expected Resolution V structure.
 
 ## Resolution Calculation
 
@@ -251,11 +282,11 @@ For typical designs (k ≤ 10, p ≤ 4), this completes in milliseconds.
 ```python
 def calculate_resolution(defining_relation):
     min_length = infinity
-    
+
     for word in defining_relation:
         if word != "I":
             min_length = min(min_length, len(word))
-    
+
     return min_length
 ```
 
@@ -294,32 +325,49 @@ Resolution: 3
 
 ## Standard Generator Library
 
-We maintain a library of well-established generators from statistical literature (Box-Hunter-Hunter, Montgomery).
+The module ships a library of well-established generators from the statistical
+literature (Box-Hunter-Hunter, Montgomery). **14 standard designs** are
+currently included (`STANDARD_GENERATORS` in `src/core/aliasing.py`):
 
-### Library Structure
+| (k, p) | Resolution | Generators |
+|--------|-----------|------------|
+| 2⁴⁻¹ (4,1) | IV | D = ABC |
+| 2⁵⁻¹ (5,1) | V | E = ABCD |
+| 2⁶⁻¹ (6,1) | VI | F = ABCDE |
+| 2⁷⁻¹ (7,1) | VII | G = ABCDEF |
+| 2⁵⁻² (5,2) | III | D = AB, E = AC |
+| 2⁶⁻² (6,2) | IV | E = ABC, F = BCD |
+| 2⁷⁻² (7,2) | IV | F = ABCD, G = ABCE |
+| 2⁸⁻² (8,2) | V | G = ABCD, H = ABEF |
+| 2⁶⁻³ (6,3) | III | D = AB, E = AC, F = BC |
+| 2⁷⁻³ (7,3) | IV | E = ABC, F = BCD, G = ACD |
+| 2⁸⁻³ (8,3) | IV | F = ABC, G = ABD, H = ABE |
+| 2⁸⁻⁴ (8,4) | IV | E = BCD, F = ACD, G = ABC, H = ABD |
+| 2⁹⁻⁴ (9,4) | IV | F = ABCD, G = ABCE, H = ABDE, J = BCDE |
+| 2¹⁰⁻⁴ (10,4) | IV | G = ABCD, H = ABEF, J = ACEF, K = BCEF |
 
-```python
-STANDARD_GENERATORS = {
-    # Key: (k, p, resolution)
-    # Value: [(factor, expression), ...]
-    
-    (5, 1, 5): [("E", "ABCD")],
-    (7, 3, 4): [("E", "ABC"), ("F", "BCD"), ("G", "ACD")],
-    (8, 4, 4): [("E", "BCD"), ("F", "ACD"), ("G", "ABC"), ("H", "ABD")],
-}
-```
+The (6,1) Resolution VI and (7,1) Resolution VII half-fractions are included
+and reachable (the resolution lookup scans up to VII).
 
 ### Selection Strategy
 
 When user specifies (k, p, resolution):
 
-1. **Lookup:** Check if (k, p, resolution) exists in library
-2. **If found:** Use standard generators (optimal)
-3. **If not found:** Return None, require user to provide custom generators
+1. **Lookup:** Check if (k, p, resolution) exists in the library
+2. **If found:** Use the standard generators
+3. **If not found:** Return None, and the design step requires the user to
+   provide custom generators
+
+```python
+get_standard_generators(5, 1, 5)   # → [('E', 'ABCD')]
+get_standard_generators(9, 1, 9)   # → None  (not in library)
+```
 
 **Why not auto-generate?**
 
-Finding optimal generators is a combinatorial optimization problem. For non-standard designs, we require explicit user specification rather than potentially generating suboptimal designs.
+Finding optimal generators is a combinatorial optimization problem. For
+non-standard designs, the app requires explicit user specification rather than
+potentially generating suboptimal designs.
 
 ## Validation Workflow
 
@@ -337,21 +385,21 @@ User provides: factors, fraction, resolution?, generators?
 3. Create GeneratorValidator
    Validate:
    - Generator syntax (X=YZ format)
-   - Factors exist
+   - Left side is a generated factor; right side letters are base factors
    - Generator count matches p
 
 4. Get or validate generators:
    If custom generators provided:
      - Validate each generator
      - Compute actual resolution
-     - Verify matches claimed resolution
-   
+     - Verify it meets the required resolution
+
    If resolution specified:
      - Lookup standard generators
      - Error if not found
-   
+
    If neither:
-     - Use highest resolution available
+     - Use the highest resolution available
 
 5. Create AliasingEngine
    - Compute defining relation
@@ -363,18 +411,21 @@ User provides: factors, fraction, resolution?, generators?
 
 ### Error Messages
 
-**Design philosophy:** Concise but actionable
+**Design philosophy:** concise but actionable.
 
-**Examples:**
+**Examples (verbatim from the module):**
 
 ❌ Bad: "Invalid generator"
 ✓ Good: "Factor 'X' in 'E=XYZ' not in base factors. Available: A, B, C, D"
 
 ❌ Bad: "Wrong number"
-✓ Good: "Expected 2 generators for 1/4 fraction, got 3"
+✓ Good: "Expected 1 generators for 1/2 fraction, got 2"
 
 ❌ Bad: "Low resolution"
 ✓ Good: "Generators achieve Resolution 4, not 5 as specified"
+
+❌ Bad: "Invalid left side"
+✓ Good: "Generator 'A=BCD' must define a generated factor (expected one of E), not base factor 'A'"
 
 ## Implementation Notes
 
@@ -384,7 +435,7 @@ User provides: factors, fraction, resolution?, generators?
    - Generator validation → GeneratorValidator
    - Name mapping → FactorMapper
    - Aliasing computation → AliasingEngine
-   - Each class has single responsibility
+   - Each class has a single responsibility
 
 2. **Immutability:**
    - Once created, AliasingEngine results don't change
@@ -393,24 +444,27 @@ User provides: factors, fraction, resolution?, generators?
 
 3. **Fail fast:**
    - Validate at construction time
-   - Don't wait until generate() to find errors
-   - Clear error messages at point of failure
+   - Don't defer validation to design generation
+   - Clear error messages at the point of failure
 
-### Performance Considerations
+### Performance
 
-**Bottleneck:** Alias structure computation for large designs
+The bottleneck is alias-structure computation for large designs. Mitigations:
 
-**Optimization:**
 - Limit effect order to 4
-- Cache defining relation
+- Cache the defining relation
 - Use set operations for efficiency
 
-**Typical performance:**
-- k=5, p=1: <1ms
-- k=8, p=4: ~5ms
-- k=10, p=5: ~50ms
+**Measured timings on a typical workstation (current implementation):**
 
-All well within acceptable limits for interactive use.
+```
+k=5,  p=1:   30 aliased effects,   2 words, ~0.3 ms
+k=8,  p=4:  162 aliased effects,  16 words, ~8 ms
+k=10, p=4:  385 aliased effects,  16 words, ~20 ms
+```
+
+These figures depend on the machine and release and may evolve; they are all
+well within interactive limits.
 
 ## References
 
