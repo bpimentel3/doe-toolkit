@@ -20,6 +20,7 @@ from src.ui.utils.state_management import (
 )
 from src.core.factors import Factor, FactorType, ChangeabilityLevel
 from src.core.aliasing import STANDARD_GENERATORS
+from src.core.selection import trim_non_estimable_terms
 from src.ui.components.constraint_builder import (
     show_constraint_builder,
     show_constraint_help
@@ -72,6 +73,66 @@ else:
             st.info("💡 Your model includes interactions - Full Factorial or D-Optimal designs work well.")
         else:
             st.info("💡 Your model is linear - Most design types will work.")
+
+def _predict_2_level_counts(design_type, config, factors):
+    """Per-factor level counts implied by the chosen design, when determinable.
+
+    Only designs that can *only* observe factors at two levels are handled
+    here.  Designs whose level structure is not yet fixed (CCD, Box-Behnken,
+    D-optimal, Latin hypercube, split-plot, imported/custom data) return an
+    empty dict and defer to Step 4, where the generated design's real
+    per-factor level counts are the authoritative estimability rule.
+    """
+    if design_type == "Fractional Factorial":
+        return {f.name: 2 for f in factors if f.is_continuous()}
+    if design_type == "Full Factorial":
+        n_levels = int(config.get('n_levels', 2) or 2)
+        n_center = int(config.get('n_center_points', 0) or 0)
+        if n_levels >= 3 or n_center > 0:
+            return {}
+        return {f.name: 2 for f in factors if f.is_continuous()}
+    return {}
+
+
+def _apply_step2_quadratic_suppression(factors):
+    """Early Step-3 correction: suppress (not merely warn about) quadratics a
+    2-level design cannot estimate.
+
+    With only two factor levels the squared column is constant (identical to
+    the intercept), so the quadratic coefficient is not identifiable.  The
+    removal persists in ``st.session_state['model_terms']``; the same
+    estimability rule is re-applied authoritatively at Step 4 against the
+    generated design's observed level counts.
+    """
+    design_type = st.session_state.get('design_type')
+    config = st.session_state.get('design_config') or {}
+    predicted = _predict_2_level_counts(design_type, config, factors)
+    if not predicted:
+        return []
+    model_terms = st.session_state.get('model_terms') or []
+    kept, removed = trim_non_estimable_terms(model_terms, factors, predicted)
+    if removed:
+        st.session_state['model_terms'] = kept
+        st.session_state['suppressed_quadratics'] = list(removed)
+        return list(removed)
+    return [
+        t for t in (st.session_state.get('suppressed_quadratics') or [])
+        if t not in model_terms
+    ]
+
+
+def _show_quadratic_suppression_notice(suppressed):
+    if not suppressed:
+        return
+    names = ", ".join(f"`{t}`" for t in suppressed)
+    st.warning(
+        f"**Non-estimable terms removed:** {names}\n\n"
+        "This design observes continuous factors at only two levels, so "
+        "quadratic terms are constant (aliased with the intercept) and "
+        "cannot be estimated. Use a response-surface design (CCD or "
+        "Box-Behnken) if you need curvature, or edit the model in Step 2."
+    )
+
 
 st.markdown(f"""
 You have defined **{len(factors)} factors**. Now choose the design type that best suits your objectives.
@@ -252,6 +313,14 @@ if st.session_state.get('design_type'):
             'randomize': randomize
         }
         
+        # 2-level full factorials without center points observe every factor
+        # at exactly two levels, so quadratic terms are not estimable —
+        # suppress them rather than only warning about them.
+        if model_selected:
+            _show_quadratic_suppression_notice(
+                _apply_step2_quadratic_suppression(factors)
+            )
+        
         # Estimate runs
         base_runs = n_levels ** len(factors)
         total_runs = (base_runs + n_center_points) * n_replicates
@@ -260,20 +329,13 @@ if st.session_state.get('design_type'):
     elif design_type == "Fractional Factorial":
         st.markdown("**Fractional Factorial Configuration**")
         
-        # Check model compatibility
+        # Check model compatibility: fractional factorials are 2-level, so
+        # quadratic terms are not estimable — suppress them rather than only
+        # warning about them.
         if model_selected:
-            model_terms = st.session_state['model_terms']
-            has_quadratic = any(t.startswith('I(') and '**2' in t for t in model_terms)
-            
-            if has_quadratic:
-                st.error(
-                    "⚠️ **Model Incompatibility:** Your selected model includes quadratic terms, "
-                    "but fractional factorial designs cannot estimate quadratic effects.\n\n"
-                    "**Recommendations:**\n"
-                    "1. Use Response Surface design (CCD or Box-Behnken) instead, OR\n"
-                    "2. Simplify model to remove quadratic terms (return to Step 2), OR\n"
-                    "3. Proceed anyway and modify model during analysis (Step 6)"
-                )
+            _show_quadratic_suppression_notice(
+                _apply_step2_quadratic_suppression(factors)
+            )
         
         k = len(factors)
         

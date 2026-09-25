@@ -35,7 +35,11 @@ from src.ui.utils.plotting import (
     create_half_normal_plot,
     _label_with_units,
 )
-from src.ui.components.model_builder import display_model_builder, format_term_for_display
+from src.ui.components.model_builder import (
+    display_model_builder,
+    format_full_equation,
+    format_term_for_display,
+)
 from src.ui.components.model_selection import display_model_selection
 from src.ui.components.diagnostics_display import display_diagnostics_tab
 from src.ui.components.lof_testing import display_lack_of_fit_test
@@ -43,6 +47,12 @@ from src.ui.components.profiler_display import display_profiler_tab
 from src.ui.components.interaction_display import display_interaction_plot_tab
 from src.ui.components.box_plot_display import display_box_plot_tab
 from src.core.analysis import ANOVAAnalysis, generate_model_terms  # noqa: E402
+from src.core.formatting import (  # noqa: E402
+    ANOVA_TABLE_FORMATTERS,
+    COEFFICIENT_TABLE_FORMATTERS,
+    format_p,
+    format_stat_table,
+)
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -56,9 +66,13 @@ def _display_anova_table(anova_table: pd.DataFrame) -> None:
     and Sub-Plot stratum — with a variance component ratio and diagnostic
     warning between them.  For non-split-plot designs the table is shown as a
     plain dataframe.
+
+    Numeric cells are formatted for presentation only (sum_sq/SS/MS at 2
+    decimal places, df as integers, F at 2 decimals, p-values per the shared
+    p-value rule); the underlying values are never modified.
     """
     if 'Stratum' not in anova_table.columns:
-        st.dataframe(anova_table, width='stretch')
+        st.dataframe(format_stat_table(anova_table, ANOVA_TABLE_FORMATTERS), width='stretch')
         return
 
     display_cols = [c for c in anova_table.columns if c != 'Stratum']
@@ -82,7 +96,7 @@ def _display_anova_table(anova_table: pd.DataFrame) -> None:
         '</div>',
         unsafe_allow_html=True,
     )
-    st.dataframe(wp_rows[display_cols], width='stretch')
+    st.dataframe(format_stat_table(wp_rows[display_cols], ANOVA_TABLE_FORMATTERS), width='stretch')
 
     # --- Variance component diagnostic ---
     if not np.isnan(ms_wp_error) and not np.isnan(ms_sp_error) and ms_sp_error > 0:
@@ -125,7 +139,7 @@ def _display_anova_table(anova_table: pd.DataFrame) -> None:
         '</div>',
         unsafe_allow_html=True,
     )
-    st.dataframe(sp_rows[display_cols], width='stretch')
+    st.dataframe(format_stat_table(sp_rows[display_cols], ANOVA_TABLE_FORMATTERS), width='stretch')
 
 
 # ==================== MAIN APP ====================
@@ -240,10 +254,18 @@ if selected_response not in st.session_state['model_terms_per_response']:
     # Pre-populate from Step 2 if available, otherwise default to linear
     if 'model_terms' in st.session_state and st.session_state['model_terms']:
         default_terms = list(st.session_state['model_terms'])
-        st.info("🎯 Using model selected in Step 2. You can modify it below if needed.")
+        st.info(
+            f"🎯 Using model selected in Step 2:\n\n"
+            f"**{format_full_equation(default_terms, selected_response)}**\n\n"
+            f"You can modify it below if needed."
+        )
     else:
         default_terms = generate_model_terms(factors, 'linear', include_intercept=True)
-        st.info("ℹ️ No model was pre-selected. Defaulting to linear model. You can modify it below.")
+        st.info(
+            f"ℹ️ No model was pre-selected. Defaulting to linear model:\n\n"
+            f"**{format_full_equation(default_terms, selected_response)}**\n\n"
+            f"You can modify it below."
+        )
     st.session_state['model_terms_per_response'][selected_response] = default_terms
 
 current_terms = list(st.session_state['model_terms_per_response'][selected_response])
@@ -324,6 +346,17 @@ st.divider()
 
 st.sidebar.header("Advanced Options")
 enforce_hierarchy = st.sidebar.checkbox("Enforce Hierarchy", value=True)
+block_in_prediction = st.sidebar.checkbox(
+    "Include block adjustment in predictions",
+    value=False,
+    key="include_block_in_prediction",
+    help=(
+        "By default the fitted equation is averaged over blocks, so block "
+        "effects do not influence predictions. Enable to keep the reference "
+        "block's adjustment in predicted values. ANOVA reporting is unchanged "
+        "either way."
+    ),
+)
 
 st.sidebar.subheader("Data Exclusion")
 if 'excluded_rows' not in st.session_state:
@@ -342,6 +375,7 @@ if exclude_mode:
 
 with st.spinner(f"Fitting model for {selected_response}..."):
     try:
+        analysis.include_block_in_prediction = block_in_prediction
         results = analysis.fit(
             model_terms=current_terms, enforce_hierarchy_flag=enforce_hierarchy
         )
@@ -349,6 +383,26 @@ with st.spinner(f"Fitting model for {selected_response}..."):
         if getattr(analysis, "rename_map", {}):
             renamed = ", ".join([f"{old} → {new}" for old, new in analysis.rename_map.items()])
             st.warning(f"Factor names renamed: {renamed}")
+
+        if analysis.excluded_term_reasons:
+            details = "  \n".join(
+                f"• **{term}** — {reason}"
+                for term, reason in analysis.excluded_term_reasons
+            )
+            st.warning(
+                "Some candidate terms could not be estimated and were excluded "
+                "from the fitted model:\n\n" + details
+            )
+
+        if not getattr(results, "blocks_in_predictions", True) and getattr(
+            results, "block_mean_shift", 0.0
+        ) != 0.0:
+            st.info(
+                f"Block is analyzed in the ANOVA but averaged out of the "
+                f"fitted prediction equation (intercept shifted by "
+                f"{results.block_mean_shift:+.4f}). Predictions do not depend "
+                f"on any specific block."
+            )
 
         if 'fitted_models' not in st.session_state:
             st.session_state['fitted_models'] = {}
@@ -370,6 +424,43 @@ _response_units_map = {
     r['name']: r.get('units') for r in _response_defs
 }
 _factor_units_map = {f.name: f.units for f in factors}
+
+# --- Observation usage: which runs were actually fitted (missing response
+# rows are auto-dropped by the fit).  Alias the used subset so every plot and
+# table below aligns its arrays with residuals/fitted_values.
+_used_indices = getattr(results, 'used_row_indices', None)
+_used_actual = getattr(results, 'used_response', None)
+if _used_actual is None and _used_indices is not None:
+    _used_actual = np.asarray(response_filtered)[_used_indices]
+_used_design = None
+if _used_indices is not None:
+    _used_design = design_filtered.iloc[_used_indices].reset_index(drop=True)
+
+if getattr(results, 'n_obs_excluded', 0) > 0:
+    st.warning(
+        f"⚠️ **Missing response values detected**\n\n"
+        f"- **Response:** {selected_response}\n"
+        f"- **Total runs:** {results.n_obs_total}\n"
+        f"- **Used in analysis:** {results.n_obs_used}\n"
+        f"- **Excluded:** {results.n_obs_excluded}\n\n"
+        "Rows with missing response values were automatically removed before "
+        "model fitting. All ANOVA results, diagnostics, predictions, profiler "
+        "outputs, and optimization results are based only on the analyzed "
+        "observations."
+    )
+    if getattr(results, 'excluded_obs_labels', None):
+        with st.expander("🔍 Which runs were excluded?"):
+            st.markdown(
+                f"**{results.n_obs_excluded} run(s)** removed from the fit due to "
+                "missing response values:"
+            )
+            st.caption(" · ".join(results.excluded_obs_labels))
+            st.caption(
+                f"Observation counts in the Model Fit summary (n = "
+                f"{results.n_obs_used} / {results.n_obs_total}) and all "
+                "diagnostic plots reflect only the analyzed observations."
+            )
+
 current_response_units = _response_units_map.get(selected_response)
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -396,21 +487,24 @@ with tab1:
             model_p = np.nan
         
         fig = create_parity_plot(
-            response_filtered, results.fitted_values,
+            _used_actual if _used_actual is not None else np.asarray(response_filtered),
+            results.fitted_values,
             response_units=current_response_units,
         )
         st.plotly_chart(fig, width='stretch', theme=None)
         if np.isnan(model_p):
             p_display = "N/A"
-        elif model_p < 0.0001:
-            p_display = f"{model_p:.4e}"
         else:
-            p_display = f"{model_p:.4f}"
+            p_display = format_p(model_p)
+        _fit_obs = f"n = {results.n_obs_used} / {results.n_obs_total}"
+        if getattr(results, 'n_obs_excluded', 0) > 0:
+            _fit_obs += f" ({results.n_obs_excluded} excluded)"
         st.caption(
             f"R² = {results.r_squared:.4f}   |   "
             f"Adj R² = {results.adj_r_squared:.4f}   |   "
             f"RMSE = {results.rmse:.4f}   |   "
-            f"p = {p_display}"
+            f"p = {p_display}   |   "
+            f"{_fit_obs}"
         )
     
     with col2:
@@ -530,13 +624,18 @@ with tab1:
     if not results.anova_table.empty:
         _display_anova_table(results.anova_table)
     
-    # Lack-of-Fit test
+    # Lack-of-Fit test (pure-error replicates grouped over the fitted subset)
     display_lack_of_fit_test(
-        design_filtered, response_filtered, results, factors, current_terms
+        _used_design if _used_design is not None else design_filtered,
+        _used_actual if _used_actual is not None else np.asarray(response_filtered),
+        results, factors, current_terms
     )
 with tab2:
     st.markdown("**Coefficient Table**")
-    st.dataframe(results.effect_estimates, width='stretch')
+    st.dataframe(
+        format_stat_table(results.effect_estimates, COEFFICIENT_TABLE_FORMATTERS),
+        width='stretch',
+    )
     
     st.divider()
     
@@ -599,12 +698,13 @@ with tab2:
                             
                             if other_cols:
                                 X_other = X_df[['Intercept'] + other_cols] if 'Intercept' in X_df.columns else X_df[other_cols]
+                                _lev_y = _used_actual if _used_actual is not None else np.asarray(response_filtered)
                                 lr_other = LinearRegression(fit_intercept=False)
-                                lr_other.fit(X_other, response_filtered)
+                                lr_other.fit(X_other, _lev_y)
                                 y_other = lr_other.predict(X_other)
-                                y_adj = response_filtered - y_other + response_filtered.mean()
+                                y_adj = _lev_y - y_other + _lev_y.mean()
                             else:
-                                y_adj = response_filtered
+                                y_adj = _used_actual if _used_actual is not None else np.asarray(response_filtered)
                         
                             fig = go.Figure()
                             
@@ -676,7 +776,13 @@ with tab2:
     
     with col1:
         st.markdown("**Residuals vs Run Order**")
-        run_order = np.arange(1, len(results.residuals) + 1)
+        if _used_indices is not None and 'RunOrder' in design_filtered.columns:
+            run_order = pd.to_numeric(
+                design_filtered['RunOrder'], errors='coerce'
+            ).to_numpy()[_used_indices]
+            run_order = np.nan_to_num(run_order, nan=0).astype(int)
+        else:
+            run_order = np.arange(1, len(results.residuals) + 1)
         
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -705,7 +811,10 @@ with tab2:
     for idx, factor in enumerate(factors):
         with factor_cols[idx % len(factor_cols)]:
             st.markdown(f"*{factor.name}*")
-            factor_vals = design_filtered[factor.name].values
+            if _used_indices is not None:
+                factor_vals = design_filtered[factor.name].to_numpy()[_used_indices]
+            else:
+                factor_vals = design_filtered[factor.name].values
             
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -781,8 +890,8 @@ with tab5:
 
     display_interaction_plot_tab(
         selected_response=selected_response,
-        design=design_filtered,
-        response=response_filtered,
+        design=_used_design if _used_design is not None else design_filtered,
+        response=_used_actual if _used_actual is not None else response_filtered,
         factors=factors,
         results=interaction_results,
         response_units=current_response_units,
@@ -790,8 +899,8 @@ with tab5:
 with tab6:
     display_box_plot_tab(
         selected_response=selected_response,
-        design=design_filtered,
-        response=response_filtered,
+        design=_used_design if _used_design is not None else design_filtered,
+        response=_used_actual if _used_actual is not None else response_filtered,
         factors=factors,
         response_units=current_response_units,
     )

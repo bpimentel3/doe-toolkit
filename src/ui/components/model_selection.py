@@ -21,8 +21,10 @@ from src.core.selection import (
     map_term_display,
     near_perfect_fit_message,
     predicted_r2_warning,
+    quadratic_omission_notes,
     run_model_selection,
 )
+from src.core.formatting import format_coefficient, format_p
 from src.ui.components.model_builder import (
     format_full_equation,
     format_term_for_display,
@@ -56,18 +58,11 @@ REASON_HELP = (
 
 
 def _format_coefficient(value) -> str:
-    if value is None or pd.isna(value):
-        return "—"
-    return f"{float(value):.4g}"
+    return format_coefficient(value)
 
 
 def _format_p(value) -> str:
-    if value is None or pd.isna(value):
-        return "N/A"
-    v = float(value)
-    if v < 0.001:
-        return f"{v:.1e}".replace("e-0", "e-")
-    return f"{v:.4f}"
+    return format_p(value)
 
 
 def _render_selection_results(
@@ -198,13 +193,18 @@ def display_model_selection(
     if state_key not in st.session_state:
         st.session_state[state_key] = {}
 
-    candidate_pool, design_type = candidate_model_pool(factors)
+    candidate_pool, design_type = candidate_model_pool(factors, anova_analysis)
 
     display_map = factor_display_map(
         factors, getattr(anova_analysis, "rename_map", None) or {}
     )
 
     st.markdown(f"**Detected Design Type:** {design_type}")
+    omitted_notes = quadratic_omission_notes(factors, anova_analysis)
+    if omitted_notes:
+        with st.expander(f"ℹ️ Quadratic terms omitted ({len(omitted_notes)})", expanded=False):
+            for note in omitted_notes:
+                st.caption(note)
     st.markdown("**Candidate Pool** (all factors, hierarchical):")
     st.caption(
         ", ".join(

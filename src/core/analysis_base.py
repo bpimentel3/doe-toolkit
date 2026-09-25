@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -74,6 +74,32 @@ class ANOVAResults:
     anova_effect_summary : Optional[pd.DataFrame]
         Term-level ANOVA effect summary (one row per ANOVA term, p-values and
         F-statistics sourced from :attr:`anova_table`).
+    block_mean_shift : float
+        Size-weighted mean block offset subtracted from the intercept so the
+        predictive equation is averaged over blocks (0 when Block stays in
+        predictions or no blocking was used).
+    blocks_in_predictions : bool
+        ``True`` when predictions retain a specific block's adjustment;
+        ``False`` when Block is averaged out of the predictive equation.
+    n_obs_total : int
+        Number of observations in the analysis frame before fitting.
+    n_obs_used : int
+        Number of observations actually used by the fitted model.  Rows whose
+        response value is missing are auto-dropped during the fit, so this can
+        be smaller than :attr:`n_obs_total`.
+    n_obs_excluded : int
+        ``n_obs_total - n_obs_used``; observations dropped before fitting.
+    excluded_obs_labels : List[str]
+        Human-readable identifiers for the excluded observations (e.g.
+        ``"Run 12"`` / ``"StdOrder 9"`` / ``"Row 3"``), used to surface which
+        rows were removed due to missing values.
+    used_row_indices : Optional[np.ndarray]
+        Integer positions (into the analysis frame) of the observations used by
+        the fitted model.  Aligns ``residuals``/``fitted_values`` with the
+        design frame for diagnostic plots.
+    used_response : Optional[np.ndarray]
+        Response values of the observations used by the fitted model, aligned
+        with :attr:`residuals` and :attr:`fitted_values`.
     """
 
     anova_table: pd.DataFrame
@@ -90,6 +116,14 @@ class ANOVAResults:
     rmse: float
     coefficient_significance: Optional[pd.DataFrame] = None
     anova_effect_summary: Optional[pd.DataFrame] = None
+    block_mean_shift: float = 0.0
+    blocks_in_predictions: bool = True
+    n_obs_total: int = 0
+    n_obs_used: int = 0
+    n_obs_excluded: int = 0
+    excluded_obs_labels: List[str] = field(default_factory=list)
+    used_row_indices: Optional[np.ndarray] = None
+    used_response: Optional[np.ndarray] = None
 
     def predict_from_settings(self, settings: Dict[str, object]) -> float:
         """

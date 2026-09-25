@@ -51,6 +51,7 @@ from src.core.analysis_base import (
 )
 from src.core.diagnostics.summary import _compute_lof_p_value
 from src.core.factor_naming import ALL_RESERVED
+from src.core.formatting import format_p
 from src.core.stepwise import (
     get_candidate_terms_backward,
 )
@@ -155,7 +156,35 @@ class ModelSelectionResults:
     bic_threshold: Optional[float] = None
 
 
-def candidate_model_pool(factors) -> Tuple[List[str], str]:
+#: Distinct design levels a continuous factor needs before its quadratic
+#: term is estimable.  Two levels make the squared column constant (aliased
+#: with the intercept); three or more (center points, axial points, CCD
+#: faces, Box-Behnken mid-edges, definitive screening runs) identify
+#: curvature.
+_MIN_LEVELS_FOR_CURVATURE = 3
+
+
+def _design_levels_by_factor(factors, anova_analysis) -> Dict[str, int]:
+    """Unique level counts per factor in the experimental design.
+
+    Level counts are read from the *coded* design frame stored on
+    ``anova_analysis``.  They are invariant to coding (a bijection with the
+    natural units), so counting them there is safe and works for imported
+    CSV data as well as generated designs.
+    """
+    design = getattr(anova_analysis, 'design', None)
+    if design is None:
+        return {}
+    levels: Dict[str, int] = {}
+    for factor in factors:
+        if factor.name in design.columns:
+            levels[factor.name] = int(design[factor.name].nunique())
+    return levels
+
+
+def candidate_model_pool(
+    factors, anova_analysis=None
+) -> Tuple[List[str], str]:
     """Derive the design-aware candidate pool and detected design type.
 
     Designs with at least one continuous factor use mains + 2-way
@@ -163,6 +192,16 @@ def candidate_model_pool(factors) -> Tuple[List[str], str]:
     Categorical-only designs fall back to mains + 2-way interactions and never
     generate quadratic terms, so model selection never raises the
     "quadratic requires a continuous factor" error.
+
+    Curvature is only estimable when a factor is observed at three or more
+    distinct levels (two levels bound a factor along a straight line; a
+    quadratic coefficient is unidentifiable because the squared column is
+    constant).  When *anova_analysis* is supplied, the quadratic term for any
+    continuous factor with fewer than three design levels is excluded from the
+    pool.  This covers two-level full/fractional/screening designs while CCD,
+    Box-Behnken, definitive screening and other response-surface designs
+    (three or more levels) keep their quadratics.  Without *anova_analysis*
+    the factor-type-based behaviour is unchanged.
 
     Returns ``(pool_without_intercept, design_type)`` where design_type is one
     of ``'Response Surface'``, ``'Categorical Factorial'`` or ``'Mixed'``.
@@ -179,7 +218,89 @@ def candidate_model_pool(factors) -> Tuple[List[str], str]:
 
     model_type = 'quadratic' if has_continuous else 'interaction'
     pool = generate_model_terms(factors, model_type, include_intercept=True)
-    return [t for t in pool if t != '1'], design_type
+    pool = [t for t in pool if t != '1']
+
+    if anova_analysis is not None and pool:
+        design_levels = _design_levels_by_factor(factors, anova_analysis)
+        if design_levels:
+            pool = trim_non_estimable_terms(pool, factors, design_levels)[0]
+
+    return pool, design_type
+
+
+def trim_non_estimable_terms(
+    terms: List[str],
+    factors,
+    design_levels: Dict[str, int],
+) -> Tuple[List[str], List[str]]:
+    """Remove quadratic terms whose factor has too few observed levels.
+
+    *design_levels* maps factor name to the number of distinct levels observed
+    for that factor in the experimental design (read from either the coded or
+    natural design frame — the count is a bijection invariant, so both agree).
+
+    Any term shaped ``I(<factor>**2)`` whose factor is observed at fewer than
+    ``_MIN_LEVELS_FOR_CURVATURE`` distinct levels is removed: with only two
+    factor levels the squared column is constant across runs (aliased with the
+    intercept), so the quadratic coefficient is not identifiable no matter
+    which design type produced the data.  Terms whose factor has no recorded
+    level count are kept (absence of evidence is not evidence of degeneracy).
+
+    Only quadratic terms are ever removed, never parent main effects, so the
+    hierarchical completeness of the input is preserved.  This is the single
+    estimability rule shared by the automatic candidate pool (modern path) and
+    the legacy user-built model hand-off.
+
+    Returns ``(kept_terms, removed_terms)``.
+    """
+    if not terms or not design_levels:
+        return list(terms), []
+    kept: List[str] = []
+    removed: List[str] = []
+    for term in terms:
+        if _quadratic_not_estimable(term, design_levels):
+            removed.append(term)
+        else:
+            kept.append(term)
+    return kept, removed
+
+
+def _quadratic_not_estimable(term: str, design_levels: Dict[str, int]) -> bool:
+    """True when *term* is a quadratic whose squared column is degenerate.
+
+    Only terms shaped ``I(<factor>**2)`` are considered; factors with no
+    recorded level count are kept (no evidence they are underdetermined).
+    """
+    if not (term.startswith('I(') and term.endswith('**2)')):
+        return False
+    n_levels = design_levels.get(term[2:-4])
+    return n_levels is not None and n_levels < _MIN_LEVELS_FOR_CURVATURE
+
+
+def quadratic_omission_notes(factors, anova_analysis) -> List[str]:
+    """Human-readable notes for continuous factors whose quadratic was omitted.
+
+    An empty list means every continuous factor's quadratic term is
+    estimable (or no design was supplied).  Used by the model-selection
+    report so the omission is explained where the candidate pool is shown.
+    """
+    if anova_analysis is None:
+        return []
+    design_levels = _design_levels_by_factor(factors, anova_analysis)
+    if not design_levels:
+        return []
+    notes = []
+    for factor in factors:
+        if factor.is_continuous() and factor.name in design_levels:
+            n_levels = design_levels[factor.name]
+            if n_levels < _MIN_LEVELS_FOR_CURVATURE:
+                notes.append(
+                    f"Curvature not estimable for '{factor.name}': "
+                    f"{n_levels} design levels observed "
+                    f"(at least {_MIN_LEVELS_FOR_CURVATURE} required) — "
+                    "quadratic term omitted."
+                )
+    return notes
 
 
 def _method_label(method: str) -> str:
@@ -563,7 +684,7 @@ def run_model_selection(
         raise ValueError("bic_threshold must be positive.")
 
     factors = anova_analysis.factors
-    candidate_pool, _ = candidate_model_pool(factors)
+    candidate_pool, _ = candidate_model_pool(factors, anova_analysis)
 
     if method == 'forward':
         final_terms, steps, started_int, convergence, pruned = forward_selection(
@@ -821,7 +942,11 @@ def compute_model_quality(
         if available:
             try:
                 lack_of_fit = _compute_lof_p_value(
-                    design, results.residuals, factors, results.model_terms
+                    design,
+                    results.residuals,
+                    factors,
+                    results.model_terms,
+                    response=getattr(results, 'used_response', None),
                 )
             except Exception:
                 lack_of_fit = None
@@ -980,13 +1105,8 @@ def map_term_display(term: str, display_map: Optional[Dict[str, str]] = None) ->
 
 
 def _format_p(p: Optional[float]) -> str:
-    if p is None:
-        return 'N/A'
-    tiny = np.finfo(float).tiny
-    v = min(max(float(p), tiny), 1.0 - 1e-16)
-    if v < 0.001:
-        return f"{v:.1e}".replace('e-0', 'e-')
-    return f"{v:.4f}"
+    """Format a p-value for display: ``<0.0001`` or 4 decimal places."""
+    return format_p(p)
 
 
 def classify_model_type(final_terms: List[str], candidate_pool: List[str]) -> str:
