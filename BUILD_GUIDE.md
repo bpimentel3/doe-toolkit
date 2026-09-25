@@ -110,10 +110,10 @@ Browser should open to `http://localhost:8501` within ~10 seconds.
 
 ```powershell
 # Create zip from project root
-Compress-Archive -Path dist\DOE-Toolkit -DestinationPath dist\DOE-Toolkit-v0.2.0-win64.zip
+Compress-Archive -Path dist\DOE-Toolkit -DestinationPath dist\DOE-Toolkit-v0.3.0-win64.zip
 ```
 
-Share `DOE-Toolkit-v0.2.0-win64.zip`. Users:
+Share `DOE-Toolkit-v0.3.0-win64.zip`. Users:
 1. Extract the zip (right-click → Extract All)
 2. Double-click `DOE-Toolkit.bat`
 3. Browser opens with the app
