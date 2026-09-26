@@ -106,9 +106,15 @@ class TestLoadDestination:
         app = load_project(_project(design_type="full_factorial"))
         assert app.session_state["_destination"] == 4
 
-    def test_factors_only_goes_to_choose_design(self, load_project):
+    def test_factors_only_goes_to_select_model(self, load_project):
+        """Factors only means model selection is still outstanding.
+
+        The destination is the step after the restored data, so factors-only
+        lands on Select Model (2). It used to be 3, which jumped past model
+        selection to Choose Design.
+        """
         app = load_project(_project())
-        assert app.session_state["_destination"] == 3
+        assert app.session_state["_destination"] == 2
 
     def test_current_step_records_the_data_not_the_destination(self, load_project):
         """The highlight follows the restored data, the navigation does not.

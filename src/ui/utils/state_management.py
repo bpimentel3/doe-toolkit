@@ -850,8 +850,13 @@ def load_project_file(file_content: str) -> Optional[int]:
             f"- Navigating to {step_name(destination)}..."
         )
     elif factors:
-        st.session_state['current_step'] = 2  # factors only; pick model terms
-        destination = 3
+        # Factors only, so the user still has to choose model terms before a
+        # design can be picked: the destination is Select Model (step 2), the
+        # step after the Define Factors data that was just restored. It used to
+        # be 3, which skipped model selection entirely and contradicted the
+        # "Navigating to ..." message it printed.
+        st.session_state['current_step'] = 2
+        destination = 2
         st.success(
             f"✓ Project loaded successfully!\n\n"
             f"- {len(factors)} factor(s) defined\n"
