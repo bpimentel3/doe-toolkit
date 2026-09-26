@@ -16,6 +16,67 @@ from src.core.augmentation.plan import AugmentationPlan, AugmentedDesign
 from src.core.diagnostics import DesignDiagnosticSummary, DesignQualityReport
 
 
+# The single source of truth for the 8-step workflow: display name and Streamlit
+# page path, both indexed by step number. Progress rendering, navigation and the
+# project-load success messages all read from these, so a step's name and the
+# page it navigates to cannot drift apart.
+STEP_NAMES: List[str] = [
+    "Define Factors",
+    "Select Model",
+    "Choose Design",
+    "Preview Design",
+    "Import Results",
+    "Analyze",
+    "Augmentation (Optional)",
+    "Optimize",
+]
+
+STEP_PAGES: List[str] = [
+    "pages/1_define_factors.py",
+    "pages/2_select_model.py",
+    "pages/3_choose_design.py",
+    "pages/4_preview_design.py",
+    "pages/5_import_results.py",
+    "pages/6_analyze.py",
+    "pages/7_augmentation.py",
+    "pages/8_optimize.py",
+]
+
+TOTAL_STEPS = len(STEP_PAGES)
+
+# Session keys a project file owns. Loading a project makes the file the source
+# of truth for these, so any that the incoming file does not carry are dropped
+# first. Without that, loading a smaller project on top of a larger one kept the
+# larger one's leftovers: a file with no design left the previous design in
+# session state, which then also decided the destination step.
+PROJECT_STATE_KEYS: List[str] = [
+    "factors",
+    "design_type",
+    "design_config",
+    "design_metadata",
+    "design",
+    "responses",
+    "response_names",
+    "model_terms_per_response",
+    "excluded_rows",
+    "augmented_design",
+    "selected_augmentation_plan",
+    "optimization_results",
+]
+
+
+def step_name(step: int) -> str:
+    """Display name for a 1-based step number, falling back to the raw number."""
+    if 1 <= step <= TOTAL_STEPS:
+        return STEP_NAMES[step - 1]
+    return f"Step {step}"
+
+
+def step_page(step: int) -> str:
+    """Streamlit page path for a 1-based step number."""
+    return STEP_PAGES[step - 1]
+
+
 def initialize_session_state() -> None:
     """
     Initialize all session state variables.
@@ -392,23 +453,14 @@ def get_workflow_progress() -> Dict[str, Any]:
     dict
         Progress information for display
     """
-    steps = [
-        "Define Factors",
-        "Select Model",
-        "Choose Design",
-        "Preview Design",
-        "Import Results",
-        "Analyze",
-        "Augmentation (Optional)",
-        "Optimize"
-    ]
-    
+    steps = list(STEP_NAMES)
+
     progress = {
-        'total_steps': 8,
+        'total_steps': TOTAL_STEPS,
         'current_step': get_current_step(),
         'steps': steps,
-        'completed': [is_step_complete(i) for i in range(1, 9)],
-        'accessible': [can_access_step(i) for i in range(1, 9)]
+        'completed': [is_step_complete(i) for i in range(1, TOTAL_STEPS + 1)],
+        'accessible': [can_access_step(i) for i in range(1, TOTAL_STEPS + 1)]
     }
     
     return progress
@@ -587,17 +639,29 @@ def create_project_file() -> str:
     return json.dumps(project, indent=2)
 
 
-def load_project_file(file_content: str) -> None:
+def load_project_file(file_content: str) -> Optional[int]:
     """
     Load project from JSON file content with factor name sanitization.
-    
+
     This function handles legacy projects that may have factor names with
     special characters that are no longer allowed.
-    
+
     Parameters
     ----------
     file_content : str
         JSON string from uploaded file
+
+    Returns
+    -------
+    Optional[int]
+        The 1-based step number the caller should navigate to, or ``None`` if
+        the project could not be loaded and the user should stay put. The
+        destination is the step *after* the deepest step whose data was
+        restored, so a project with a design but no results lands on Import
+        Results rather than on Preview Design where the data already sits.
+        Navigation itself is left to the caller (see
+        ``src.ui.components.sidebar.add_project_load``), which must clear the
+        uploader before switching pages or the load re-fires on every rerun.
     """
     import json
     import pandas as pd
@@ -613,11 +677,17 @@ def load_project_file(file_content: str) -> None:
         project = json.loads(file_content)
     except json.JSONDecodeError as e:
         st.error(f"Invalid project file: {e}")
-        return
+        return None
     
     # Validate version (simple check)
     if 'version' not in project:
         st.warning("Project file missing version. Attempting to load anyway...")
+
+    # The incoming file is authoritative: drop state from any previously loaded
+    # project before restoring, so keys the file does not carry cannot survive.
+    for key in PROJECT_STATE_KEYS:
+        if key in st.session_state:
+            del st.session_state[key]
     
     # Restore factors with sanitization
     factors = []
@@ -651,7 +721,7 @@ def load_project_file(file_content: str) -> None:
     
     if not factors:
         st.error("No valid factors found in project file")
-        return
+        return None
     
     st.session_state['factors'] = factors
     
@@ -746,41 +816,58 @@ def load_project_file(file_content: str) -> None:
         else:
             st.session_state['model_terms_per_response'] = model_terms
     
-    # Set current step based on what's loaded
+    # Set current_step to the deepest step whose data was restored, and report
+    # the step to navigate to -- the one after it. These used to disagree: the
+    # values stored the data's own step while the messages described the
+    # destination, so "Navigating to data import..." was paired with
+    # current_step=4 (Preview Design). Both now name the same step.
+    destination: Optional[int] = None
     if st.session_state.get('responses'):
-        st.session_state['current_step'] = 5  # Go to analysis
+        st.session_state['current_step'] = 5  # results restored; analyze them
+        destination = 6
         st.success(
             f"✓ Project loaded successfully!\n\n"
             f"- {len(factors)} factor(s)\n"
             f"- {len(st.session_state.get('responses', {}))} response(s)\n"
-            f"- Navigating to analysis..."
+            f"- Navigating to {step_name(destination)}..."
         )
     elif st.session_state.get('design') is not None:
-        st.session_state['current_step'] = 4  # Go to import
+        st.session_state['current_step'] = 4  # design restored; add results
+        destination = 5
         st.success(
             f"✓ Project loaded successfully!\n\n"
             f"- {len(factors)} factor(s)\n"
             f"- Design with {len(st.session_state['design'])} runs\n"
-            f"- Navigating to data import..."
+            f"- Navigating to {step_name(destination)}..."
         )
     elif st.session_state.get('design_type'):
-        st.session_state['current_step'] = 3  # Go to preview
+        st.session_state['current_step'] = 3  # design type only; generate it
+        destination = 4
         st.success(
             f"✓ Project loaded successfully!\n\n"
             f"- {len(factors)} factor(s)\n"
             f"- Design type: {st.session_state['design_type']}\n"
-            f"- Navigating to design preview..."
+            f"- Navigating to {step_name(destination)}..."
         )
     elif factors:
-        st.session_state['current_step'] = 2  # Go to design selection
+        # Factors only, so the user still has to choose model terms before a
+        # design can be picked: the destination is Select Model (step 2), the
+        # step after the Define Factors data that was just restored. It used to
+        # be 3, which skipped model selection entirely and contradicted the
+        # "Navigating to ..." message it printed.
+        st.session_state['current_step'] = 2
+        destination = 2
         st.success(
             f"✓ Project loaded successfully!\n\n"
             f"- {len(factors)} factor(s) defined\n"
-            f"- Navigating to design selection..."
+            f"- Navigating to {step_name(destination)}..."
         )
     else:
-        st.session_state['current_step'] = 1  # Start at factors
+        st.session_state['current_step'] = 1  # nothing usable restored
+        destination = 1
         st.success("✓ Project loaded successfully!")
+
+    return destination
 
 
 def sanitize_design_columns(design: pd.DataFrame, factors: list) -> pd.DataFrame:

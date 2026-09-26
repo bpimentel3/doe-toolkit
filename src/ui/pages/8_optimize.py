@@ -639,8 +639,8 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     if st.button("← Back to Augmentation", width='stretch'):
-        st.session_state['current_step'] = 6
-        st.switch_page("pages/6_augmentation.py")
+        st.session_state['current_step'] = 7
+        st.switch_page("pages/7_augmentation.py")
 
 with col2:
     st.markdown("*Workflow complete! Download results or start new project.*")

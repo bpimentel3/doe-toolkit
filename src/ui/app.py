@@ -147,21 +147,12 @@ if any(progress['completed']):
             break
     
     if next_step:
-        step_names = [
-            "Define Factors",
-            "Select Model",
-            "Choose Design",
-            "Preview Design", 
-            "Import Results",
-            "Analyze",
-            "Augmentation",
-            "Optimize"
-        ]
-        
+        from src.ui.utils.state_management import step_name
+
         col1, col2, col3 = st.columns([2, 1, 2])
         
         with col1:
-            st.markdown(f"**Next step:** {step_names[next_step-1]}")
+            st.markdown(f"**Next step:** {step_name(next_step)}")
             
             # Show progress
             completed_count = sum(progress['completed'])
@@ -171,20 +162,11 @@ if any(progress['completed']):
             st.markdown("")  # Spacer
         
         with col3:
-            pages = [
-                "pages/1_define_factors.py",
-                "pages/2_select_model.py",
-                "pages/3_choose_design.py",
-                "pages/4_preview_design.py",
-                "pages/5_import_results.py",
-                "pages/6_analyze.py",
-                "pages/7_augmentation.py",
-                "pages/8_optimize.py"
-            ]
-            
+            from src.ui.utils.state_management import step_page
+
             if st.button(f"Continue to Step {next_step} →", type="primary", width='stretch'):
                 st.session_state['current_step'] = next_step
-                st.switch_page(pages[next_step-1])
+                st.switch_page(step_page(next_step))
 
 st.divider()
 
