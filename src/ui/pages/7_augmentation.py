@@ -59,8 +59,8 @@ if not can_access_step(6):
     
     with col2:
         if st.button("Go to Import Data →", width='stretch'):
-            st.session_state['current_step'] = 4
-            st.switch_page("pages/4_import_results.py")
+            st.session_state['current_step'] = 5
+            st.switch_page("pages/5_import_results.py")
     
     st.stop()
 
