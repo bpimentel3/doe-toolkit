@@ -17,6 +17,12 @@ _GITHUB_RELEASES_URL = (
     "https://api.github.com/repos/bpimentel3/doe-toolkit/releases/latest"
 )
 
+# Base name for the project uploader's key. The rendered key appends a counter
+# so that a file the user has already loaded is never re-read on a later run;
+# see add_project_load.
+PROJECT_UPLOADER_KEY = "project_uploader"
+PROJECT_LOAD_COUNTER = "_project_load_counter"
+
 
 def _fetch_latest_version() -> Optional[str]:
     """
@@ -221,28 +227,45 @@ def add_quick_navigation():
 def add_project_load():
     """
     Add project load section to sidebar.
-    
+
     Should be called near the top, before workflow progress.
+
+    On a successful load this navigates to the step the project is ready for.
+    Two Streamlit constraints shape the code:
+
+    * An uploaded file is kept in session state across reruns, and its value
+      cannot be cleared through ``st.session_state`` -- Streamlit rejects
+      assigning to a ``file_uploader`` key outright. Reusing one key therefore
+      re-entered this block on every rerun and re-ran the load forever,
+      repeating the success message without ever navigating. The widget's key
+      carries a counter so a consumed file becomes unreachable: bumping the
+      counter leaves the next page with a brand new, empty uploader.
+    * ``st.switch_page`` raises immediately, so the counter is bumped before the
+      call and nothing that matters can live after it.
     """
+    from src.ui.utils.state_management import load_project_file, step_page
+
+    load_id = st.session_state.get(PROJECT_LOAD_COUNTER, 0)
     uploaded_project = st.sidebar.file_uploader(
         "📂 Load Project",
         type=['doeproject', 'json'],
         help="Resume from saved project",
-        key="project_uploader"
+        key=f"{PROJECT_UPLOADER_KEY}_{load_id}"
     )
-    
+
     if uploaded_project:
         try:
-            from src.ui.utils.state_management import load_project_file
-            
             project_content = uploaded_project.read().decode('utf-8')
-            load_project_file(project_content)
-            
-            st.sidebar.success("✓ Project loaded!")
-            st.rerun()
+            destination = load_project_file(project_content)
+
+            # None means the load failed; stay on this page and let the user
+            # pick another file.
+            if destination is not None:
+                st.session_state[PROJECT_LOAD_COUNTER] = load_id + 1
+                st.switch_page(step_page(destination))
         except Exception as e:
             st.sidebar.error(f"Load failed: {e}")
-    
+
     st.sidebar.markdown("---")
 
 
