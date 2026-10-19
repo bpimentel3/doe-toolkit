@@ -46,6 +46,17 @@ Provides professional statistical design capabilities — without the expensive 
 
 See [QUICKSTART.md](QUICKSTART.md) for a full walkthrough.
 
+### For Linux / macOS (Nix)
+With [Nix](https://nixos.org) (flakes enabled):
+```bash
+# Run without installing
+nix run github:probar/doe-toolkit
+
+# Or install into your profile, then run `doe-toolkit`
+nix profile install github:probar/doe-toolkit
+```
+The app opens in your browser at http://localhost:8501. Extra Streamlit flags can be appended, e.g. `doe-toolkit --server.port 8600`. For a development shell with all dependencies and pytest: `nix develop`.
+
 ### For Developers
 ```powershell
 git clone https://github.com/bpimentel3/doe-toolkit.git
